@@ -1,0 +1,588 @@
+AI EMAIL SYSTEM - PRODUCTION IMPLEMENTATION DOSSIER (APPROVAL-FIRST)
+Date: 2026-04-07
+Mode: DESIGN + SAFE MIGRATION PLAN ONLY (NO RUNTIME CODE CHANGES APPLIED)
+
+=====================================================================
+0) SAFETY GUARANTEE FOR THIS PHASE
+=====================================================================
+- This document proposes incremental, backward-compatible changes only.
+- No pipeline rewrite.
+- Existing pipeline contract remains: Sync -> RAG -> Generate -> Send.
+- Legacy single-email mode remains functional during and after migration.
+- All new capabilities are additive and feature-flagged.
+
+Deployment rule:
+1. Add schema (non-breaking)
+2. Add dual-read/dual-write code paths
+3. Backfill legacy mappings
+4. Enable new paths via flags
+5. Remove legacy paths only after stability SLO is met
+
+=====================================================================
+1) ONBOARDING REDESIGN
+=====================================================================
+
+1.1 Friction points (technical, cognitive, failure-prone)
+A) Technical friction
+- Requires DB + OpenAI + Gmail OAuth ready before first value.
+- Errors are fragmented across endpoints and logs.
+- Token/storage assumptions differ (workspace token vs user token path).
+
+B) Cognitive friction
+- User must understand architecture before success.
+- No progressive success milestones.
+- No guided remediation hierarchy (what to do first).
+
+C) Failure-prone steps
+- OAuth callback/token expiry edge cases.
+- Missing env variables detected late.
+- DB connectivity/schema readiness not surfaced as actionable checklist.
+
+1.2 New onboarding model: progressive, self-validating
+Onboarding states:
+- STATE_0: system_created
+- STATE_1: db_ready
+- STATE_2: openai_ready
+- STATE_3: gmail_connected
+- STATE_4: first_sync_complete
+- STATE_5: first_draft_generated
+
+Principles:
+- Progressive unlock: user can continue after each validated step.
+- Human-readable diagnosis + exact fix + retry.
+- Auto-retry background checks for transient failures.
+
+1.3 Check Connections system (real-time)
+Endpoint: GET /api/system/connections
+Response:
+{
+  "db": {"ok": true, "error": null, "fix": null, "lastCheckedAt": "..."},
+  "openai": {"ok": false, "error": "auth_failed", "cause": "invalid_api_key", "fix": "Set OPENAI_API_KEY in env and reload"},
+  "gmail": {"ok": false, "error": "oauth_missing", "cause": "no_refresh_token", "fix": "Connect Gmail in Step 3"}
+}
+
+Retry endpoint:
+POST /api/system/connections/retry
+Body: {"targets": ["db", "openai", "gmail"]}
+
+1.4 Auto-retry mechanisms
+- DB transient retry: exponential backoff (1s, 2s, 4s, max 30s).
+- OAuth refresh retry: immediate retry once, then bounded backoff.
+- OpenAI retry: existing retry logic preserved; onboarding checker reports clear fix.
+
+1.5 Default configuration to reduce friction
+- config.global_mode default: assist
+- config.send_mode default: dry
+- threshold default: 0.70
+- category_rules seeded with safe defaults
+- first-run skips full Gmail backfill and only anchors history cursor
+
+1.6 UX flow redesign
+Step 1: Create System
+Step 2: Verify DB
+Step 3: Add OpenAI key
+Step 4: Connect Gmail account
+Step 5: Run first incremental sync
+Step 6: Generate first draft test
+
+Each step card includes:
+- Status chip: waiting/running/success/failed
+- Failure details: error/cause/fix
+- Action buttons: Retry, Run diagnostics, View logs
+
+=====================================================================
+2) SYSTEM MODEL DESIGN (MULTI-EMAIL PER SYSTEM)
+=====================================================================
+
+Target model:
+system (one behavioral workspace)
+- Owns infrastructure config and defaults
+- Contains many email accounts
+
+email_accounts (one per identity mailbox)
+- Own OAuth tokens and sync cursor
+- Own behavioral memory scope (RAG isolation)
+
+Core invariants:
+- No cross-account tone contamination.
+- Retrieval, generation, send all scoped to account_id.
+- Shared infra, isolated behavior.
+
+2.1 Logical entities
+A) systems
+- id
+- name
+- config_json (non-secret defaults)
+- onboarding_state
+- created_at, updated_at
+
+B) system_secrets (or encrypted fields)
+- system_id
+- openai_api_key_enc (optional per-system override)
+- secret_version
+
+C) email_accounts
+- id
+- system_id
+- email_address
+- provider (gmail)
+- oauth_refresh_token_enc
+- oauth_token_expiry
+- status (active, needs_reauth, disabled)
+- last_history_id
+- last_sync_at
+- created_at, updated_at
+
+D) account_memory_scopes (optional explicit metadata)
+- account_id
+- rag_dataset_version
+- tone_profile_version
+
+E) existing emails table becomes account-scoped
+- add account_id nullable initially, non-null after backfill
+
+2.2 Backward compatibility model
+Legacy compatibility strategy:
+- Create default system row (id=1) and default account mapped from current primary user.
+- Existing rows in emails map to default account via migration.
+- Legacy endpoints without account_id use default account resolver.
+
+Resolver order:
+1) Explicit account_id in request
+2) account selected in session context
+3) default account for current system
+4) fallback: legacy primary user mapping
+
+=====================================================================
+3) REQUIRED SCHEMA CHANGES (ADDITIVE + SAFE)
+=====================================================================
+
+3.1 New tables
+
+SQL: systems
+CREATE TABLE IF NOT EXISTS systems (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT 'Default System',
+  config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  onboarding_state TEXT NOT NULL DEFAULT 'system_created',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+SQL: email_accounts
+CREATE TABLE IF NOT EXISTS email_accounts (
+  id SERIAL PRIMARY KEY,
+  system_id INTEGER NOT NULL REFERENCES systems(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  email_address TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'gmail',
+  oauth_refresh_token TEXT,
+  oauth_token_expiry TIMESTAMPTZ,
+  status TEXT NOT NULL DEFAULT 'active',
+  last_history_id TEXT,
+  last_sync_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(system_id, email_address)
+);
+
+SQL: system_diagnostics
+CREATE TABLE IF NOT EXISTS system_diagnostics (
+  id BIGSERIAL PRIMARY KEY,
+  system_id INTEGER NOT NULL REFERENCES systems(id) ON DELETE CASCADE,
+  account_id INTEGER REFERENCES email_accounts(id) ON DELETE SET NULL,
+  check_type TEXT NOT NULL,
+  ok BOOLEAN NOT NULL,
+  error TEXT,
+  cause TEXT,
+  fix TEXT,
+  meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+3.2 Additive columns to existing tables
+
+SQL: emails scope columns
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS system_id INTEGER REFERENCES systems(id) ON DELETE SET NULL;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES email_accounts(id) ON DELETE SET NULL;
+
+SQL: embeddings scope columns
+ALTER TABLE email_embeddings ADD COLUMN IF NOT EXISTS system_id INTEGER REFERENCES systems(id) ON DELETE SET NULL;
+ALTER TABLE email_embeddings ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES email_accounts(id) ON DELETE SET NULL;
+
+SQL: threads scope columns
+ALTER TABLE email_threads ADD COLUMN IF NOT EXISTS system_id INTEGER REFERENCES systems(id) ON DELETE SET NULL;
+ALTER TABLE email_threads ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES email_accounts(id) ON DELETE SET NULL;
+
+SQL: jobs scope columns
+ALTER TABLE job_queue ADD COLUMN IF NOT EXISTS system_id INTEGER REFERENCES systems(id) ON DELETE SET NULL;
+ALTER TABLE job_queue ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES email_accounts(id) ON DELETE SET NULL;
+
+3.3 Indexes for scale and isolation
+CREATE INDEX IF NOT EXISTS idx_emails_account_state_date
+  ON emails(account_id, state, internal_date DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_account_hnsw_cosine
+  ON email_embeddings USING hnsw (embedding vector_cosine_ops)
+  WITH (m = 16, ef_construction = 64);
+
+CREATE INDEX IF NOT EXISTS idx_email_threads_account_thread
+  ON email_threads(account_id, thread_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_email_unique_per_account_gmail
+  ON emails(account_id, gmail_id)
+  WHERE account_id IS NOT NULL;
+
+3.4 Data migration queries (safe)
+
+Step A: seed default system
+INSERT INTO systems (id, name, onboarding_state)
+VALUES (1, 'Default System', 'system_created')
+ON CONFLICT (id) DO NOTHING;
+
+Step B: create default account for existing primary user
+INSERT INTO email_accounts (system_id, user_id, email_address, provider, oauth_refresh_token, oauth_token_expiry, status, last_history_id)
+SELECT 1, u.id, COALESCE(u.gmail_email, u.email), 'gmail', u.gmail_refresh_token, u.gmail_token_expiry,
+       CASE WHEN u.gmail_refresh_token IS NULL THEN 'needs_reauth' ELSE 'active' END,
+       c.last_gmail_history_id
+FROM users u
+CROSS JOIN config c
+WHERE NOT EXISTS (
+  SELECT 1 FROM email_accounts a WHERE a.system_id = 1 AND a.user_id = u.id
+)
+LIMIT 1;
+
+Step C: map legacy rows
+UPDATE emails e
+SET system_id = 1,
+    account_id = (
+      SELECT a.id FROM email_accounts a
+      WHERE a.system_id = 1
+      ORDER BY a.id ASC LIMIT 1
+    )
+WHERE e.account_id IS NULL;
+
+UPDATE email_embeddings em
+SET system_id = 1,
+    account_id = (
+      SELECT e.account_id FROM emails e WHERE e.id = em.email_id
+    )
+WHERE em.account_id IS NULL;
+
+UPDATE email_threads t
+SET system_id = 1,
+    account_id = (
+      SELECT e.account_id FROM emails e
+      WHERE e.thread_id = t.thread_id
+      ORDER BY e.id DESC LIMIT 1
+    )
+WHERE t.account_id IS NULL;
+
+=====================================================================
+4) PIPELINE MODIFICATIONS (SAFE, INCREMENTAL, BACKWARD COMPATIBLE)
+=====================================================================
+
+4.1 Sync layer
+Current issue: cursor can advance before persistence completion.
+Fix:
+- Move history cursor commit to end of successful batch transaction.
+- Persist per-account cursor in email_accounts.last_history_id.
+- Keep config.last_gmail_history_id as legacy fallback until migration complete.
+
+Pseudo-contract:
+syncGmailMailbox(systemId, accountId)
+- read account.last_history_id
+- fetch history
+- ingest all messages idempotently
+- commit account.last_history_id only after ingest success
+
+4.2 Ingestion layer
+- Add account_id/system_id to insertEmailIfNotExists payload.
+- Dedup key becomes (account_id, gmail_id).
+- Thread upsert key becomes (account_id, thread_id).
+
+4.3 Reconciliation layer
+Current truth bug: uses first outbound in thread.
+Fix query semantics:
+- For each inbound, mark REPLIED if EXISTS outbound in same account/thread with internal_date > inbound.internal_date.
+
+Correct SQL shape:
+UPDATE emails i
+SET state = 'REPLIED', updated_at = NOW()
+WHERE i.source = 'inbox'
+  AND i.state NOT IN ('SENT', 'REPLIED', 'ERROR_FATAL')
+  AND EXISTS (
+    SELECT 1
+    FROM emails o
+    WHERE o.account_id = i.account_id
+      AND o.thread_id = i.thread_id
+      AND (o.source IN ('sent','compose') OR o.state = 'SENT')
+      AND o.internal_date > i.internal_date
+  );
+
+4.4 RAG retrieval/generation/send scoping
+- searchNearestEmbeddings filters by account_id.
+- getRelevantContext receives accountId and includes it in cache key.
+- generateReply receives account profile (name/email identity) instead of hardcoded person.
+- sendGmailEmail/sendManual use account-scoped OAuth identity only.
+
+4.5 Backward compatibility guarantee
+- If accountId omitted, resolve default account and proceed.
+- Existing API contracts remain valid.
+- New account-aware endpoints are additive.
+
+=====================================================================
+5) ERROR SYSTEM DESIGN (PRODUCTION GRADE)
+=====================================================================
+
+5.1 Standardized error envelope (all API failures)
+{
+  "error": "SYNC_FAILED",
+  "cause": "gmail_history_404",
+  "fix": "Reconnect Gmail account or run history reset from Diagnostics"
+}
+
+5.2 Error catalog (examples)
+- DB_QUERY_FAILED
+  cause: connection_timeout
+  fix: Verify DATABASE_URL and DB service health; retry diagnostics.
+
+- OAUTH_REFRESH_FAILED
+  cause: invalid_grant
+  fix: Reconnect Gmail account to refresh consent.
+
+- SYNC_CURSOR_INVALID
+  cause: history_404
+  fix: Run account history reset; no full mailbox fetch required.
+
+- RAG_RETRIEVAL_EMPTY
+  cause: no_relevant_chunks
+  fix: Continue with thread-only fallback; queue sent-memory backfill.
+
+- GENERATION_FAILED
+  cause: llm_timeout_or_rate_limit
+  fix: Retry generation; reduce batch size; check OpenAI key and quota.
+
+5.3 UI behavior requirements
+Every failed action card shows:
+- error (plain language)
+- cause (technical hint)
+- fix (human action)
+- Retry button
+
+5.4 Health dashboard + diagnostics
+New endpoints:
+- GET /api/system/health
+- POST /api/system/diagnostics/run
+- GET /api/system/diagnostics/history
+
+Diagnostics test matrix:
+- DB ping + write test
+- OpenAI minimal completion test
+- Gmail token refresh + profile read
+- Gmail history cursor read
+- RAG sample retrieval test
+
+5.5 Failure simulation support
+Endpoint: POST /api/system/diagnostics/simulate
+Body:
+{
+  "scenario": "oauth_invalid_grant|db_unreachable|llm_timeout|sync_history_404"
+}
+Response always includes error/cause/fix envelope.
+
+=====================================================================
+6) RAG IMPROVEMENTS (NEAR-PERFECT RELIABILITY, INCREMENTAL)
+=====================================================================
+
+Goals:
+- Stable ranking
+- Better chunk diversity
+- Better precision packing
+- Thread-aware fallback
+- No embedding/retrieval subsystem break
+
+6.1 Ranking stability
+- Keep existing score terms but reduce hard additive bias.
+- Add score normalization pass per retrieval batch.
+- Add deterministic tie-breakers: final_score DESC, distance ASC, chunk_id ASC.
+
+6.2 Diversity constraints
+Selection constraints:
+- max 2 chunks per thread
+- max 1 near-duplicate per semantic cluster
+- enforce at least 2 topic families when available
+
+6.3 Thread-aware improvements
+- Prioritize chunks from same sender-role patterns for selected account.
+- Add recency decay by account-thread frequency.
+
+6.4 Weak-RAG fallback strategy
+Fallback order:
+1) account-scoped thread-local context
+2) account-scoped semantic memory
+3) no-memory generation with explicit conservative style constraints
+
+6.5 Anti-drift protections
+- Prevent hardcoded identity strings.
+- identity prompt fields sourced from account profile.
+- validation gate blocks meta-reference leakage and identity mismatch.
+
+6.6 Observability additions
+Log fields per generation:
+- account_id
+- rag_context_count
+- context_diversity_score
+- context_precision_score
+- fallback_tier_used
+
+=====================================================================
+7) VECTOR + PAGEINDEX STRATEGY (HYBRID)
+=====================================================================
+
+7.1 Evaluation: where PageIndex helps/hurts
+Helps:
+- Long threads where positional relevance matters.
+- Follow-up questions referencing prior turn numbers/order.
+- Extracting latest commitments and unresolved asks.
+
+Hurts:
+- Noisy/quoted chain artifacts if not cleaned.
+- Can bias to recent-but-irrelevant content.
+
+7.2 Hybrid retrieval design
+retrieve(query, account_id, thread_id):
+- semantic_results = vector_search(account_id, query_embedding)
+- structured_results = thread_position_search(account_id, thread_id, latest_window)
+- merge = weighted_fusion(semantic, structured)
+- dedup + diversity + precision packing
+
+Fusion score:
+hybrid_score = 0.7 * semantic_score + 0.3 * structured_score
+Adaptive:
+- If query intent is follow-up/scheduling in existing thread: 0.55/0.45
+- If new topic: 0.85/0.15
+
+7.3 Minimal change path
+- Add structured retriever module (new file/module)
+- Keep vector retrieval untouched
+- Add fusion stage between rank and select
+- Feature flag: RAG_HYBRID_ENABLED
+
+Performance guardrails:
+- Structured search window max N=20 messages
+- Total retrieval latency budget <= 150ms p95 local
+
+=====================================================================
+8) PRODUCTION HARDENING FIXES
+=====================================================================
+
+8.1 Sync correctness
+- Commit history cursor after successful ingest only.
+- Per-account cursor isolation.
+- Idempotent upserts by (account_id, gmail_id).
+
+8.2 Reconciliation truth
+- Replace first-reply logic with EXISTS newer outbound logic.
+- Scope by account_id + thread_id.
+
+8.3 Duplicate send prevention
+- Before send, re-read latest thread state from Gmail for target account when in auto mode.
+- Add idempotency key for outbound send attempts:
+  send_key = sha1(account_id + thread_id + draft_hash)
+- store send attempts table with unique(send_key).
+
+8.4 Thread consistency
+- Thread storage keyed by (account_id, thread_id).
+- Always persist latest thread snapshot after successful send.
+
+8.5 Determinism controls
+- deterministic ordering in retrieval and selection.
+- explicit fallback tiers and logged rationale.
+- bounded retries and explicit terminal failure state.
+
+8.6 Unsafe behavior fixes
+- Remove hardcoded identity in generator prompt.
+- Eliminate mixed token sources (workspace token for manual send).
+- stop masking API failures as generic queued warnings in critical endpoints.
+
+=====================================================================
+9) STEP-BY-STEP IMPLEMENTATION PLAN (APPROVAL GATE)
+=====================================================================
+
+Phase 0: Pre-change safety
+- Add feature flags:
+  - MULTI_ACCOUNT_ENABLED=false
+  - RAG_HYBRID_ENABLED=false
+  - STRICT_ERROR_ENVELOPE_ENABLED=false
+- Add migration dry-run verification script.
+
+Phase 1: Schema + mapping (no behavior change)
+1) Create systems/email_accounts/system_diagnostics tables.
+2) Add nullable account/system columns to existing tables.
+3) Seed default system/account.
+4) Backfill legacy rows with default account.
+5) Add indexes.
+
+Exit criteria:
+- No endpoint behavior changed.
+- Existing tests pass.
+- Query plans remain healthy.
+
+Phase 2: Account-aware read paths (dual-read)
+1) Add account resolver utility (request/session/default).
+2) Update sync, threads, embeddings queries to accept optional account_id.
+3) If absent, fallback to legacy/default behavior.
+
+Exit criteria:
+- Legacy clients unchanged.
+- New account_id paths validated.
+
+Phase 3: Critical correctness fixes
+1) Cursor commit ordering fix.
+2) Reconciliation EXISTS-based fix.
+3) Duplicate send idempotency key + pre-send freshness check.
+4) Remove hardcoded identity path.
+
+Exit criteria:
+- No silent data loss.
+- No false unreplied on reconciliation test suite.
+
+Phase 4: Error system + onboarding
+1) Implement standardized error envelope.
+2) Add connection checker endpoints.
+3) Add diagnostics and simulation endpoints.
+4) Add onboarding state machine UI + retry actions.
+
+Exit criteria:
+- Every failure returns error/cause/fix.
+- New user reaches first draft with guided flow.
+
+Phase 5: RAG reliability upgrades (flagged)
+1) Add stable tie-breakers and normalized scoring.
+2) Add diversity constraints and weak-RAG fallback tiering.
+3) Add account-scoped cache keys.
+4) Add RAG hybrid fusion path behind flag.
+
+Exit criteria:
+- RAG quality metrics improve (precision, faithfulness, consistency).
+- No throughput regression >10% p95.
+
+Phase 6: Enablement and cleanup
+1) Enable MULTI_ACCOUNT_ENABLED in staging.
+2) Run migration validation + backfill integrity checks.
+3) Enable STRICT_ERROR_ENVELOPE_ENABLED.
+4) Enable RAG_HYBRID_ENABLED for canary cohort.
+5) Promote to production after SLO pass.
+
+=====================================================================
+APPROVAL CHECKLIST (REQUIRED BEFORE CODE CHANGES)
+=====================================================================
+[ ] Approve schema additions and migration sequence
+[ ] Approve per-account behavior isolation model
+[ ] Approve error envelope contract
+[ ] Approve onboarding flow and diagnostics endpoints
+[ ] Approve RAG hybrid retrieval strategy
+[ ] Approve phased rollout with feature flags
+
+If approved, next step is implementation in small safe patches with verification after each phase.

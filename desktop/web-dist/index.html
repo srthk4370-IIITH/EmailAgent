@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EmailAgent Desktop Runtime</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: Segoe UI, system-ui, -apple-system, sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+      }
+      main {
+        max-width: 680px;
+        padding: 28px;
+        border-radius: 14px;
+        background: #111827;
+        border: 1px solid #334155;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 22px;
+      }
+      p {
+        margin: 0 0 12px;
+        line-height: 1.5;
+      }
+      code {
+        background: #020617;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        padding: 2px 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>EmailAgent Desktop Wrapper</h1>
+      <p>The desktop window expects your local runtime at <code>http://localhost:3000</code>.</p>
+      <p>If this screen appears in a packaged build, start the runtime first with <code>npm run desktop:runtime:prod</code> in the project root.</p>
+      <p>For live development with hot reload use <code>npm run desktop:tauri:dev</code>.</p>
+    </main>
+  </body>
+</html>
