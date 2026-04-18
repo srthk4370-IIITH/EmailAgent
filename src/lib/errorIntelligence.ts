@@ -165,12 +165,14 @@ function withAuthGuidance(error: AppError): AppError {
 }
 
 function withExhaustedRecovery(error: AppError): AppError {
+  const suffix = "Automatic recovery attempts were exhausted.";
+  const reason = error.reason.includes(suffix) ? error.reason : `${error.reason} ${suffix}`;
   return {
     ...error,
     severity: error.severity === "critical" ? "critical" : "high",
     retryable: false,
     autoRecoverable: false,
-    reason: `${error.reason} Automatic recovery attempts were exhausted.`,
+    reason,
     fix: "Use Fix now and complete the recommended remediation before retrying.",
     fixNowPath: error.fixNowPath ?? "/settings",
   };

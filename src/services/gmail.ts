@@ -12,6 +12,7 @@ import {
   markUserEmailAccountsNeedsReauth,
 } from "../db/emailAccounts";
 import { getRuntimeConfigSync } from "../lib/runtimeConfig";
+import { emitSystemSignal } from "../lib/systemSignals";
 
 type OAuthRefreshErrorLike = {
   message?: unknown;
@@ -203,6 +204,14 @@ export async function getValidUserClient(userId: number): Promise<gmail_v1.Gmail
         console.warn(
           `Gmail refresh token revoked for user ${userId}; marked credentials as needs_reauth (${summary})`,
         );
+        void emitSystemSignal("GMAIL_DISCONNECTED", {
+          state: "NEEDS_REAUTH",
+          error: summary,
+          meta: {
+            reason: "invalid_grant",
+            userKey: `user:${userId}`,
+          },
+        });
       } else {
         console.error(`Failed to refresh Gmail token for user ${userId}: ${summary}`);
       }
@@ -216,6 +225,15 @@ export async function getValidUserClient(userId: number): Promise<gmail_v1.Gmail
 export async function getValidAccountClient(accountId: number): Promise<gmail_v1.Gmail | null> {
   const account = await getEmailAccountById(accountId);
   if (!account || !account.oauth_refresh_token) {
+    void emitSystemSignal("GMAIL_DISCONNECTED", {
+      state: "NEEDS_REAUTH",
+      error: account ? "refresh_token_absent" : "account_not_found",
+      meta: {
+        reason: account ? "refresh_token_absent" : "account_not_found",
+        accountId,
+        userKey: `account:${accountId}`,
+      },
+    });
     if (account && account.status !== "needs_reauth") {
       try {
         await markEmailAccountNeedsReauth(accountId);
@@ -257,6 +275,15 @@ export async function getValidAccountClient(accountId: number): Promise<gmail_v1
         console.warn(
           `Gmail refresh token revoked for account ${accountId}; marked credentials as needs_reauth (${summary})`,
         );
+        void emitSystemSignal("GMAIL_DISCONNECTED", {
+          state: "NEEDS_REAUTH",
+          error: summary,
+          meta: {
+            reason: "invalid_grant",
+            accountId,
+            userKey: `account:${accountId}`,
+          },
+        });
       } else {
         console.error(`Failed to refresh Gmail token for account ${accountId}: ${summary}`);
       }

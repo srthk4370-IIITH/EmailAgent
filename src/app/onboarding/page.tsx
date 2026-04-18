@@ -539,7 +539,7 @@ export default function OnboardingPage() {
       return (
         <div className="rounded-xl app-input px-4 py-4 text-sm app-text-secondary">
           <p className="mb-3">Authorize your Gmail account before validating this step.</p>
-          <a href="/api/auth/google" data-testid="button-connect-gmail" className="app-button-secondary inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs">
+          <a href="/api/auth/google?prompt=consent%20select_account" data-testid="button-connect-gmail" className="app-button-secondary inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs">
             <LinkIcon /> Connect Gmail account
           </a>
           <p className="mt-3 text-xs app-text-muted">
@@ -834,7 +834,7 @@ export default function OnboardingPage() {
           </section>
 
           <section className="mt-3 text-xs app-text-muted">
-            Need to reauthenticate now? <Link href="/api/auth/google" className="app-accent-text">Connect Gmail again</Link>
+            Need to reauthenticate now? <Link href="/api/auth/google?prompt=consent%20select_account" className="app-accent-text">Connect Gmail again</Link>
           </section>
 
           {!status && (

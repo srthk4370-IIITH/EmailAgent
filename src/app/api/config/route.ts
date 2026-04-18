@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getConfig, type AppConfig, updateConfig } from "../../../db/config";
+import { releaseDryModeReadyToSendBacklog } from "../../../db/emails";
 import { apiError } from "../../../lib/apiError";
 import {
   getRuntimeConfigBooleanSync,
@@ -26,12 +27,22 @@ const categoryColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const DEFAULT_BUDGET_EXPAND_THRESHOLD_PERCENT = 90;
 const DEFAULT_BUDGET_EXPAND_STEP = 250_000;
 const DEFAULT_BUDGET_MAX_DAILY_LIMIT = 3_000_000;
+const DEFAULT_SHIP_MODE = "production";
+const DEFAULT_SHIP_LOG_LEVEL = "adaptive";
+const DEFAULT_SHIP_RETRY_LIMIT = 3;
 
 type BudgetRuntimeSettings = {
   token_budget_auto_expand_enabled: boolean;
   token_budget_max_daily_limit: number;
   token_budget_expand_step: number;
   token_budget_expand_threshold_percent: number;
+};
+
+type ShipRuntimeSettings = {
+  mode: string;
+  log_level: string;
+  retry_limit: number;
+  timeout_strict: boolean;
 };
 
 function parsePositiveInt(raw: string | null, fallback: number): number {
@@ -66,10 +77,20 @@ function readBudgetRuntimeSettings(): BudgetRuntimeSettings {
   };
 }
 
-function withBudgetRuntimeSettings(config: AppConfig): AppConfig & BudgetRuntimeSettings {
+function readShipRuntimeSettings(): ShipRuntimeSettings {
+  return {
+    mode: getRuntimeConfigSync("MODE") ?? DEFAULT_SHIP_MODE,
+    log_level: getRuntimeConfigSync("LOG_LEVEL") ?? DEFAULT_SHIP_LOG_LEVEL,
+    retry_limit: parsePositiveInt(getRuntimeConfigSync("RETRY_LIMIT"), DEFAULT_SHIP_RETRY_LIMIT),
+    timeout_strict: getRuntimeConfigBooleanSync("TIMEOUT_STRICT", true),
+  };
+}
+
+function withRuntimeSettings(config: AppConfig): AppConfig & BudgetRuntimeSettings & ShipRuntimeSettings {
   return {
     ...config,
     ...readBudgetRuntimeSettings(),
+    ...readShipRuntimeSettings(),
   };
 }
 
@@ -83,6 +104,10 @@ const updateSchema = z.object({
   token_budget_max_daily_limit: z.number().int().positive().optional(),
   token_budget_expand_step: z.number().int().positive().optional(),
   token_budget_expand_threshold_percent: z.number().int().min(1).max(100).optional(),
+  mode: z.enum(["development", "production"]).optional(),
+  log_level: z.enum(["adaptive", "debug", "info", "warn", "error"]).optional(),
+  retry_limit: z.number().int().positive().max(10).optional(),
+  timeout_strict: z.boolean().optional(),
   category_rules: z.record(z.string().min(1), categoryRuleValueSchema).optional(),
   category_colors: z.record(z.string().min(1), categoryColorSchema).optional(),
   tone: z.string().min(1).optional(),
@@ -92,7 +117,7 @@ async function GETHandler() {
   const start = Date.now();
   try {
     const config = await getConfig();
-    const response = NextResponse.json(withBudgetRuntimeSettings(config));
+    const response = NextResponse.json(withRuntimeSettings(config));
     logSlowApi("/api/config", start);
     return response;
   } catch (err) {
@@ -150,6 +175,14 @@ async function POSTHandler(request: NextRequest) {
             ),
           }
         : {}),
+      ...(parsed.data.mode ? { MODE: parsed.data.mode } : {}),
+      ...(parsed.data.log_level ? { LOG_LEVEL: parsed.data.log_level } : {}),
+      ...(typeof parsed.data.retry_limit === "number"
+        ? { RETRY_LIMIT: String(parsed.data.retry_limit) }
+        : {}),
+      ...(typeof parsed.data.timeout_strict === "boolean"
+        ? { TIMEOUT_STRICT: parsed.data.timeout_strict ? "true" : "false" }
+        : {}),
     };
 
     const updatedBaseConfig =
@@ -161,7 +194,12 @@ async function POSTHandler(request: NextRequest) {
       await setRuntimeConfigValues(runtimeUpdates);
     }
 
-    const response = NextResponse.json(withBudgetRuntimeSettings(updatedBaseConfig));
+    if (parsed.data.send_mode === "live") {
+      // When operators switch to live mode, immediately release dry-mode cooldowns.
+      await releaseDryModeReadyToSendBacklog().catch(() => {});
+    }
+
+    const response = NextResponse.json(withRuntimeSettings(updatedBaseConfig));
     logSlowApi("/api/config", start);
     return response;
   } catch (err) {

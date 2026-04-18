@@ -4,11 +4,29 @@ export async function claimSendAttempt(sendKey: string, emailId: number, account
   const result = await db.query(
     `INSERT INTO send_attempts (account_id, email_id, send_key, status)
      VALUES ($1, $2, $3, 'started')
-     ON CONFLICT (send_key) DO NOTHING
+     ON CONFLICT (send_key) DO UPDATE
+     SET account_id = EXCLUDED.account_id,
+         email_id = EXCLUDED.email_id,
+         status = 'started',
+         updated_at = NOW()
+     WHERE send_attempts.status = 'failed'
      RETURNING id`,
     [accountId ?? null, emailId, sendKey],
   );
   return Boolean(result.rows[0]);
+}
+
+export async function getSendAttemptStatus(sendKey: string): Promise<"started" | "failed" | "sent" | null> {
+  const result = await db.query<{ status: string }>(
+    "SELECT status FROM send_attempts WHERE send_key = $1 LIMIT 1",
+    [sendKey],
+  );
+
+  const status = result.rows[0]?.status;
+  if (status === "started" || status === "failed" || status === "sent") {
+    return status;
+  }
+  return null;
 }
 
 export async function completeSendAttempt(sendKey: string): Promise<void> {

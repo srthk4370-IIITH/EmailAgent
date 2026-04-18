@@ -12,6 +12,11 @@ dotenv.config();
 export type RuntimeConfigKey =
   | "DATABASE_URL"
   | "OPENAI_API_KEY"
+  | "AUTH_SECRET"
+  | "MODE"
+  | "LOG_LEVEL"
+  | "RETRY_LIMIT"
+  | "TIMEOUT_STRICT"
   | "GMAIL_CLIENT_ID"
   | "GMAIL_CLIENT_SECRET"
   | "GMAIL_REDIRECT_URI"
@@ -40,6 +45,7 @@ const LEGACY_ENV: Record<string, string> = Object.fromEntries(
 const SECRET_KEYS = new Set<RuntimeConfigKey>([
   "DATABASE_URL",
   "OPENAI_API_KEY",
+  "AUTH_SECRET",
   "GMAIL_CLIENT_ID",
   "GMAIL_CLIENT_SECRET",
   "GMAIL_REDIRECT_URI",
@@ -47,6 +53,16 @@ const SECRET_KEYS = new Set<RuntimeConfigKey>([
   "MIDDLEWARE_VERIFY_SECRET",
   "ONBOARDING_DRAFT_SECRET",
   "ONBOARDING_DRAFT_SECRET_PREVIOUS",
+]);
+
+// These values must come only from explicit user input persisted in runtime config.
+// Do not auto-import them from process.env because that can leak developer credentials
+// into a fresh user profile.
+const USER_SUPPLIED_ONLY_KEYS = new Set<RuntimeConfigKey>([
+  "OPENAI_API_KEY",
+  "GMAIL_CLIENT_ID",
+  "GMAIL_CLIENT_SECRET",
+  "GMAIL_REDIRECT_URI",
 ]);
 
 const CONFIG_DIR = path.join(os.homedir(), ".emailagent");
@@ -81,6 +97,10 @@ function isSecretKey(key: RuntimeConfigKey): boolean {
   return SECRET_KEYS.has(key);
 }
 
+function allowLegacyEnvFallback(key: RuntimeConfigKey): boolean {
+  return !USER_SUPPLIED_ONLY_KEYS.has(key);
+}
+
 function getFromLegacyEnv(key: RuntimeConfigKey): string | null {
   const value = LEGACY_ENV[key];
   if (!value || !value.trim()) return null;
@@ -98,6 +118,10 @@ export function getRuntimeConfigSync(key: RuntimeConfigKey): string | null {
     const secret = normalizeValue(keychainStore.getSecretSync(key));
     if (secret) return secret;
 
+    if (!allowLegacyEnvFallback(key)) {
+      return null;
+    }
+
     const fallback = getFromLegacyEnv(key);
     if (fallback) {
       keychainStore.setSecretSync(key, fallback);
@@ -108,6 +132,10 @@ export function getRuntimeConfigSync(key: RuntimeConfigKey): string | null {
 
   const persisted = normalizeValue(readRuntimeConfigFileSync()[key]);
   if (persisted) return persisted;
+
+  if (!allowLegacyEnvFallback(key)) {
+    return null;
+  }
 
   const fallback = getFromLegacyEnv(key);
   if (fallback) {

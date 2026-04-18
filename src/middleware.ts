@@ -1,23 +1,65 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
+import { getAuthSecret } from "./lib/authConfig";
 import { normalizeError } from "./lib/errorNormalizer";
 import { checkApiRateLimit, clientIpFromRequest } from "./lib/rateLimit";
 
 const PUBLIC_API_PREFIXES = [
   "/api/auth/login",
   "/api/auth/google",
+  "/api/auth/desktop",
   "/api/auth/me",
   "/api/auth/logout",
   "/api/callback",
   "/api/connect",
 ];
 
-function getMiddlewareVerifySecret(): string | null {
-  const raw = process.env.MIDDLEWARE_VERIFY_SECRET;
+const RATE_LIMIT_EXEMPT_PREFIXES = [
+  "/api/session/verify",
+  "/api/system/health",
+  "/api/system/check",
+  "/api/system/connections",
+  "/api/system/diagnostics/run",
+  "/api/system/accounts",
+  "/api/sync/status",
+];
+
+function normalizeSecret(raw: string | null | undefined): string | null {
   if (!raw) return null;
-  const value = raw.trim();
-  return value.length > 0 ? value : null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function matchesPrefix(pathname: string, prefixes: string[]): boolean {
+  for (const prefix of prefixes) {
+    if (pathname === prefix || pathname.startsWith(`${prefix}/`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function shouldUseSecureCookieForMiddleware(request: NextRequest): boolean {
+  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  const httpsByProxy = forwardedProto === "https";
+  const httpsByUrl = request.nextUrl.protocol === "https:";
+  if (!(httpsByProxy || httpsByUrl)) return false;
+
+  const host = request.nextUrl.hostname.toLowerCase();
+  const isLoopback = host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0";
+  return !isLoopback;
+}
+
+async function resolveMiddlewareVerifySecret(): Promise<string | null> {
+  const envSecret = normalizeSecret(process.env.AUTH_SECRET ?? process.env.MIDDLEWARE_VERIFY_SECRET ?? null);
+  if (envSecret) return envSecret;
+
+  try {
+    return await getAuthSecret();
+  } catch {
+    return null;
+  }
 }
 
 export async function middleware(request: NextRequest) {
@@ -27,8 +69,7 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // TIER 3 HARDENING: Robust skip for the internal verify endpoint (handles trailing slashes)
-  if (pathname === "/api/session/verify" || pathname === "/api/session/verify/") {
+  if (matchesPrefix(pathname, RATE_LIMIT_EXEMPT_PREFIXES)) {
     return NextResponse.next();
   }
 
@@ -42,21 +83,33 @@ export async function middleware(request: NextRequest) {
     return NextResponse.json({ error: appError }, { status: appError.status });
   }
 
-  for (const p of PUBLIC_API_PREFIXES) {
-    if (pathname === p || pathname.startsWith(`${p}/`)) {
-      return NextResponse.next();
-    }
+  if (matchesPrefix(pathname, PUBLIC_API_PREFIXES)) {
+    return NextResponse.next();
   }
 
-  const verifySecret = getMiddlewareVerifySecret();
+  const verifySecret = await resolveMiddlewareVerifySecret();
 
   if (!verifySecret) {
-    const appError = normalizeError("auth_not_configured", {
-      source: "middleware",
-      route: pathname,
-      operation: "verify-secret",
-      fallbackStatus: 503,
-    });
+    const appError = normalizeError(
+      {
+        code: "AUTH_SECRET_MISSING",
+        category: "AUTH",
+        severity: "critical",
+        retryable: true,
+        autoRecoverable: false,
+        message: "Session verification is not configured",
+        reason: "No AUTH_SECRET is available for middleware session verification.",
+        fix: "Open Settings to refresh runtime configuration, then sign in again.",
+        fixNowPath: "/settings",
+        status: 503,
+      },
+      {
+        source: "middleware",
+        route: pathname,
+        operation: "verify-secret",
+        fallbackStatus: 503,
+      },
+    );
     return NextResponse.json({ error: appError }, { status: appError.status });
   }
 
@@ -95,7 +148,20 @@ export async function middleware(request: NextRequest) {
         operation: "session-verify",
         fallbackStatus: sessionRes.status || 401,
       });
-      return NextResponse.json({ error: appError }, { status: appError.status });
+      const response = NextResponse.json({ error: appError }, { status: appError.status });
+
+      // If the DB no longer has this session, clear the stale cookie to break 401 loops.
+      if (sessionRes.status === 401) {
+        response.cookies.set("ea_session", "", {
+          httpOnly: true,
+          path: "/",
+          maxAge: 0,
+          sameSite: "lax",
+          secure: shouldUseSecureCookieForMiddleware(request),
+        });
+      }
+
+      return response;
     }
     
     console.log("MIDDLEWARE: Session verify SUCCESS");
@@ -115,4 +181,5 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: ["/api/:path*"],
+  runtime: "nodejs",
 };

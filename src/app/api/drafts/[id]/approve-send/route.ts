@@ -4,10 +4,12 @@ import { z } from "zod";
 import { db } from "../../../../../db/client";
 import { getConfig } from "../../../../../db/config";
 import { saveIdempotentResponse } from "../../../../../db/idempotency";
+import { processEmailById } from "../../../../../core/processor";
 import { runSafetyChecks } from "../../../../../core/safety";
 import { apiError } from "../../../../../lib/apiError";
 import { logSlowApi } from "../../../../../utils/api";
 import { logStep } from "../../../../../utils/logger";
+import { withTimeout } from "../../../../../utils/withTimeout";
 import { withApiRoute } from "../../../../../lib/routeErrorHandler";
 
 const paramsSchema = z.object({ id: z.string().regex(/^\d+$/) });
@@ -162,12 +164,45 @@ async function POSTHandler(request: NextRequest, context: { params: Promise<{ id
       });
 
       const config = await getConfig();
+
+      let syncFallback: {
+        attempted: boolean;
+        completed: boolean;
+        final_state: string | null;
+        error: string | null;
+      } = {
+        attempted: true,
+        completed: false,
+        final_state: email.state,
+        error: null,
+      };
+
+      try {
+        await withTimeout(processEmailById(email.id), 12_000);
+        const refreshed = await db.query<{ state: string }>("SELECT state FROM emails WHERE id = $1 LIMIT 1", [email.id]);
+        syncFallback = {
+          attempted: true,
+          completed: true,
+          final_state: refreshed.rows[0]?.state ?? null,
+          error: null,
+        };
+      } catch (err) {
+        const refreshed = await db.query<{ state: string }>("SELECT state FROM emails WHERE id = $1 LIMIT 1", [email.id]);
+        syncFallback = {
+          attempted: true,
+          completed: false,
+          final_state: refreshed.rows[0]?.state ?? null,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+
       const response = NextResponse.json({
         ok: true,
         status: "queued",
         emailId: email.id,
         draftId: draft.id,
         send_mode: config.send_mode,
+        sync_fallback: syncFallback,
       });
 
       if (idempotencyKey) {
@@ -177,6 +212,7 @@ async function POSTHandler(request: NextRequest, context: { params: Promise<{ id
           emailId: email.id,
           draftId: draft.id,
           send_mode: config.send_mode,
+          sync_fallback: syncFallback,
         }).catch(() => {});
       }
 

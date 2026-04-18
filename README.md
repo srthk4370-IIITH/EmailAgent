@@ -22,7 +22,39 @@ The app runs a local desktop runtime (UI + API + worker), keeps your workspace s
 
 ## 2. Installation
 
-### Desktop app install
+### Option A: Run from source (GitHub clone)
+
+Prerequisites:
+- Node.js 20+
+- npm 10+
+- PostgreSQL database (local or hosted)
+- OpenAI API key
+- Google OAuth client credentials for Gmail API
+
+Desktop packaging prerequisites (for installer builds):
+- Rust (`rustc`, `cargo`)
+- On Windows: Visual Studio Build Tools with MSVC + Windows SDK
+
+Setup steps:
+1. Clone the repository.
+2. Install dependencies:
+	- `npm install`
+	- If npm reports peer-resolution issues, use: `npm install --legacy-peer-deps`
+3. Create local runtime config:
+	- Copy `.env.example` to `.env.local`
+	- Fill in your own credentials and database URL
+4. Initialize database schema:
+	- `npm run db:init`
+5. Run preflight checks:
+	- `npm run desktop:preflight`
+
+Run commands:
+- App + worker (development runtime): `npm run desktop:runtime:dev`
+- App + worker (production runtime): `npm run build && npm run desktop:runtime:prod`
+- Tauri desktop dev shell: `npm run desktop:tauri:dev`
+- Build installer/app bundle: `npm run desktop:tauri:build`
+
+### Option B: Install prebuilt desktop app
 1. Download the latest installer from your release channel.
 2. Run the installer.
 3. Launch EmailAgent Desktop.
@@ -31,6 +63,12 @@ The app runs a local desktop runtime (UI + API + worker), keeps your workspace s
 - On first launch, EmailAgent opens onboarding automatically.
 - You must provide your own OpenAI and Google OAuth credentials.
 - Gmail connection is validated before full operation is enabled.
+
+### Replication verification checklist (fresh clone)
+1. `npm run typecheck` passes.
+2. `npm run desktop:preflight` shows all required checks as PASS.
+3. `npm run release:ship:checklist` passes.
+4. `npm run desktop:tauri:build` produces a desktop bundle/installer.
 
 ## 3. Onboarding (step-by-step)
 

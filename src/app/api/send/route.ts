@@ -6,9 +6,11 @@ import { getDraftById } from "../../../db/drafts";
 import { getConfig } from "../../../db/config";
 import { getEmailById } from "../../../db/emails";
 import { getIdempotentResponse, saveIdempotentResponse } from "../../../db/idempotency";
+import { processEmailById } from "../../../core/processor";
 import { runSafetyChecks } from "../../../core/safety";
 import { logStep } from "../../../utils/logger";
 import { logSlowApi } from "../../../utils/api";
+import { withTimeout } from "../../../utils/withTimeout";
 import { apiError } from "../../../lib/apiError";
 import { withApiRoute } from "../../../lib/routeErrorHandler";
 
@@ -101,10 +103,43 @@ async function POSTHandler(request: NextRequest) {
       state: "READY_TO_SEND",
       latency_ms: 0,
     });
+
+    let syncFallback: {
+      attempted: boolean;
+      completed: boolean;
+      final_state: string | null;
+      error: string | null;
+    } = {
+      attempted: true,
+      completed: false,
+      final_state: email.state,
+      error: null,
+    };
+
+    try {
+      await withTimeout(processEmailById(email.id), 12_000);
+      const refreshed = await getEmailById(email.id);
+      syncFallback = {
+        attempted: true,
+        completed: true,
+        final_state: refreshed?.state ?? null,
+        error: null,
+      };
+    } catch (err) {
+      const refreshed = await getEmailById(email.id);
+      syncFallback = {
+        attempted: true,
+        completed: false,
+        final_state: refreshed?.state ?? null,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
     const payloadOut = {
       status: "queued",
       emailId: email.id,
       send_mode: config.send_mode,
+      sync_fallback: syncFallback,
     };
 
     if (idempotencyKey) {

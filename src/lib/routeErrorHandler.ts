@@ -12,6 +12,22 @@ export type ApiRouteContext = {
 
 type ApiHandler = (...args: any[]) => Promise<NextResponse>;
 
+function preserveErrorResponseMetadata(source: NextResponse, target: NextResponse): NextResponse {
+  source.headers.forEach((value, key) => {
+    const lower = key.toLowerCase();
+    if (lower === "content-type" || lower === "content-length" || lower === "set-cookie") {
+      return;
+    }
+    target.headers.set(key, value);
+  });
+
+  for (const cookie of source.cookies.getAll()) {
+    target.cookies.set(cookie);
+  }
+
+  return target;
+}
+
 async function getEmailIdFromArgs(args: any[]): Promise<number | null> {
   const context = args[1];
   if (!context || typeof context !== "object") return null;
@@ -61,7 +77,10 @@ async function normalizeResponseError(response: NextResponse, context: ApiRouteC
       existingPayload: payload,
       recovery: recoveryMeta,
     });
-    return NextResponse.json({ error: appError, recovery: recoveryMeta }, { status: appError.status });
+    return preserveErrorResponseMetadata(
+      response,
+      NextResponse.json({ error: appError, recovery: recoveryMeta }, { status: appError.status }),
+    );
   } catch (err) {
     const recovered = evaluateErrorRecovery(
       normalizeError(err, {
@@ -83,7 +102,10 @@ async function normalizeResponseError(response: NextResponse, context: ApiRouteC
       status: response.status,
       recovery: recoveryMeta,
     });
-    return NextResponse.json({ error: appError, recovery: recoveryMeta }, { status: appError.status });
+    return preserveErrorResponseMetadata(
+      response,
+      NextResponse.json({ error: appError, recovery: recoveryMeta }, { status: appError.status }),
+    );
   }
 }
 

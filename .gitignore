@@ -5,6 +5,8 @@ node_modules
 .next/
 out
 dist
+dist-worker
+desktop/runtime
 test-results/
 *.log
 *.tsbuildinfo
@@ -13,3 +15,4 @@ eval_output*.txt
 src-tauri/target/
 src-tauri/gen/
 src-tauri/.cargo/
+.tmp-fresh-home/

@@ -234,14 +234,14 @@ export default function DashboardPage() {
                 label="Step 2: Google Identity" 
                 ok={health.primary_user_ok} 
                 text="Create primary user record"
-                href="/api/auth/google"
+                href="/api/auth/google?prompt=consent%20select_account"
                 actionText="Sign in with Google"
               />
               <SetupStep 
                 label="Step 3: Gmail Access" 
                 ok={health.gmail_token_ok} 
                 text="Enable background sync"
-                href="/api/auth/google"
+                href="/api/auth/google?prompt=consent%20select_account"
                 actionText="Authorize Gmail"
               />
             </div>

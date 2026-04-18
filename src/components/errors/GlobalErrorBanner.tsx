@@ -1,16 +1,31 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { usePathname } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, RefreshCcw, Wrench, X } from "lucide-react";
 
+import { buildErrorFixSteps, describeFixTarget } from "../../lib/errorGuidance";
 import { useErrorCenter } from "./ErrorCenter";
 
 export function GlobalErrorBanner() {
-  const { globalError, retryAction, clearGlobalError, canDismissGlobalError } = useErrorCenter();
+  const pathname = usePathname();
+  const { globalError, retryAction, fixAction, clearGlobalError, canDismissGlobalError } = useErrorCenter();
   const [retrying, setRetrying] = useState(false);
+  const [fixing, setFixing] = useState(false);
+  const [showSteps, setShowSteps] = useState(false);
+
+  const fixSteps = useMemo(() => (globalError ? buildErrorFixSteps(globalError) : []), [globalError]);
+
+  useEffect(() => {
+    setShowSteps(false);
+  }, [globalError?.code, globalError?.timestamp]);
 
   if (!globalError) return null;
+
+  const onFixPage =
+    !!globalError.fixNowPath &&
+    (pathname === globalError.fixNowPath || pathname.startsWith(`${globalError.fixNowPath}/`));
 
   const critical = globalError.severity === "critical";
   const containerTone = critical
@@ -25,8 +40,22 @@ export function GlobalErrorBanner() {
     try {
       await retryAction();
       clearGlobalError({ force: true });
+    } catch {
+      setShowSteps(true);
     } finally {
       setRetrying(false);
+    }
+  }
+
+  async function runFixNow() {
+    if (!fixAction || fixing) return;
+    setFixing(true);
+    try {
+      await fixAction();
+    } catch {
+      setShowSteps(true);
+    } finally {
+      setFixing(false);
     }
   }
 
@@ -72,7 +101,7 @@ export function GlobalErrorBanner() {
           <button
             type="button"
             onClick={() => void runRetry()}
-            disabled={retrying}
+            disabled={retrying || fixing}
             className="app-button-secondary inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs"
           >
             <RefreshCcw className={`h-3.5 w-3.5 ${retrying ? "animate-spin" : ""}`} />
@@ -80,13 +109,72 @@ export function GlobalErrorBanner() {
           </button>
         )}
 
-        {globalError.fixNowPath && (
-          <Link href={globalError.fixNowPath} className="app-button-primary inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs">
+        {fixAction ? (
+          <button
+            type="button"
+            onClick={() => void runFixNow()}
+            disabled={retrying || fixing}
+            className="app-button-primary inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs disabled:opacity-70"
+          >
+            <Wrench className={`h-3.5 w-3.5 ${fixing ? "animate-spin" : ""}`} />
+            {fixing ? "Applying fix" : "Fix now"}
+          </button>
+        ) : globalError.fixNowPath ? (
+          onFixPage ? (
+            globalError.retryable && retryAction ? (
+              <button
+                type="button"
+                onClick={() => void runRetry()}
+                disabled={retrying}
+                className="app-button-primary inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs"
+              >
+                <Wrench className="h-3.5 w-3.5" />
+                Re-check now
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowSteps(true)}
+                className="app-button-primary inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs"
+              >
+                <Wrench className="h-3.5 w-3.5" />
+                Show fix steps
+              </button>
+            )
+          ) : (
+            <Link href={globalError.fixNowPath} className="app-button-primary inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs">
+              <Wrench className="h-3.5 w-3.5" />
+              Fix now
+            </Link>
+          )
+        ) : null}
+
+        {fixAction && globalError.fixNowPath && !onFixPage && (
+          <Link href={globalError.fixNowPath} className="app-button-secondary inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs">
             <Wrench className="h-3.5 w-3.5" />
-            Fix now
+            Open {describeFixTarget(globalError.fixNowPath)}
           </Link>
         )}
+
+        <button
+          type="button"
+          onClick={() => setShowSteps((value) => !value)}
+          className="app-button-secondary inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs"
+        >
+          {showSteps ? "Hide steps" : "Show steps"}
+        </button>
       </div>
+
+      {showSteps && (
+        <div className="mt-3 rounded-lg border app-border bg-[color:var(--surface-secondary)] px-3 py-3">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.08em] app-text-faint">Fix Steps</div>
+          <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs app-text-secondary">
+            {fixSteps.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+        </div>
+      )}
     </div>
   );
 }

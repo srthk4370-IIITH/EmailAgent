@@ -11,6 +11,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+webbrowser = "1"
 
 [features]
 default = ["custom-protocol"]

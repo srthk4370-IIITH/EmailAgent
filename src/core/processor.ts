@@ -15,6 +15,7 @@ import {
 } from "../db/drafts";
 import {
   claimEmailForProcessing,
+  deferReadyToSendInDryMode,
   getEmailById,
   getEmailByGmailId,
   incrementEmailFeedbackCounter,
@@ -71,7 +72,8 @@ import {
   updateAccountHistoryCursor,
 } from "../db/emailAccounts";
 import { getDefaultSystemId } from "../db/systems";
-import { claimSendAttempt, completeSendAttempt, failSendAttempt } from "../db/sendAttempts";
+import { claimSendAttempt, completeSendAttempt, failSendAttempt, getSendAttemptStatus } from "../db/sendAttempts";
+import { emitSystemSignal } from "../lib/systemSignals";
 import { isBudgetAvailable, resetDailyTokensIfNeeded } from "./costControl";
 import { updateServiceHealth, recordWorkerHeartbeat } from "../db/systemHealth";
 import { computePriorityScore } from "./priorityScore";
@@ -1430,12 +1432,14 @@ async function processOneEmail(email: EmailRecord): Promise<void> {
         }
 
         if (config.send_mode === "dry") {
+          const nextAttemptAt = await deferReadyToSendInDryMode(email.id, 30);
           await logStep({
             trace_id: traceId,
             gmail_id: email.gmail_id,
             step: "send_skipped_dry_mode",
             state: "READY_TO_SEND",
             latency_ms: 0,
+            error: `next_attempt_at=${nextAttemptAt ?? "null"}`,
           });
           return;
         }
@@ -1464,13 +1468,49 @@ async function processOneEmail(email: EmailRecord): Promise<void> {
           .digest("hex");
         const claimedSend = await claimSendAttempt(sendKey, email.id, email.account_id ?? null);
         if (!claimedSend) {
+          const duplicateStatus = await getSendAttemptStatus(sendKey);
+          if (duplicateStatus === "sent") {
+            const reconciled = await transitionReadyToSendToSent(email.id);
+            await logStep({
+              trace_id: traceId,
+              gmail_id: email.gmail_id,
+              step: "send_reconciled_prior_idempotent_success",
+              state: reconciled ? "SENT" : "READY_TO_SEND",
+              latency_ms: 0,
+            });
+            return;
+          }
+
+          if (duplicateStatus === "started") {
+            const retry = await scheduleEmailRetry(email.id, "send_duplicate_key_in_progress", 3);
+            await logStep({
+              trace_id: traceId,
+              gmail_id: email.gmail_id,
+              step: "send_blocked_idempotent_in_progress",
+              state: retry.state,
+              latency_ms: 0,
+              error: `next_attempt_at=${retry.nextAttemptAt ?? "null"}`,
+            });
+            return;
+          }
+
           await logStep({
             trace_id: traceId,
             gmail_id: email.gmail_id,
             step: "send_blocked_idempotent_duplicate",
             state: "READY_TO_SEND",
             latency_ms: 0,
-            error: "duplicate_send_key",
+            error: `duplicate_send_key:${duplicateStatus ?? "unknown"}`,
+          });
+
+          const retry = await scheduleEmailRetry(email.id, `send_duplicate_key_${duplicateStatus ?? "unknown"}`, 3);
+          await logStep({
+            trace_id: traceId,
+            gmail_id: email.gmail_id,
+            step: "send_blocked_idempotent_scheduled_retry",
+            state: retry.state,
+            latency_ms: 0,
+            error: `next_attempt_at=${retry.nextAttemptAt ?? "null"}`,
           });
           return;
         }
@@ -1538,6 +1578,17 @@ async function processOneEmail(email: EmailRecord): Promise<void> {
             state: "AWAITING_REVIEW",
             latency_ms: 0,
             error: safetyResult.reasons.join(", "),
+          });
+          void emitSystemSignal("SEND_BLOCKED_SAFETY", {
+            state: "AWAITING_REVIEW",
+            traceId,
+            gmailId: email.gmail_id,
+            error: safetyResult.reasons.join(", "),
+            meta: {
+              emailId: email.id,
+              accountId: email.account_id ?? null,
+              reasons: safetyResult.reasons,
+            },
           });
           try { await failSendAttempt(sendKey); } catch { /* best-effort */ }
           await markAwaitingReview(email.id);

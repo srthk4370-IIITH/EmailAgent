@@ -12,6 +12,7 @@ import {
 } from "../src/db/emails";
 import { getRelevantContext } from "../src/core/rag";
 import { callLlm, getLlmFailureState } from "../src/services/llm";
+import { getRuntimeConfig, setRuntimeConfigValues } from "../src/lib/runtimeConfig";
 
 function nowId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
@@ -74,8 +75,11 @@ async function main() {
   const accountBefore = await getDefaultEmailAccount(systemId);
   if (!accountBefore) throw new Error("No default email account row");
 
+  const runtimeSnapshot = {
+    OPENAI_API_KEY: await getRuntimeConfig("OPENAI_API_KEY"),
+  };
+
   const envSnapshot = {
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     HTTP_PROXY: process.env.HTTP_PROXY,
     HTTPS_PROXY: process.env.HTTPS_PROXY,
   };
@@ -90,7 +94,7 @@ async function main() {
       last_history_id: accountBefore.last_history_id,
     },
     env: {
-      hasOpenAiKey: Boolean(envSnapshot.OPENAI_API_KEY),
+      hasOpenAiKey: Boolean(runtimeSnapshot.OPENAI_API_KEY),
       httpProxy: envSnapshot.HTTP_PROXY ?? null,
       httpsProxy: envSnapshot.HTTPS_PROXY ?? null,
     },
@@ -179,7 +183,14 @@ async function main() {
 
   await runScenario("SCENARIO_3_OPENAI_FAILURE", async () => {
     // Scenario 3: OpenAI hard failure fallback path
-    process.env.OPENAI_API_KEY = "sk-fi-invalid-key";
+    if (!runtimeSnapshot.OPENAI_API_KEY) {
+      logBlock("SCENARIO_3_OPENAI_FAILURE", {
+        blocked: true,
+        reason: "No runtime OpenAI key configured; cannot run invalid-key fallback test safely.",
+      });
+      return;
+    }
+    await setRuntimeConfigValues({ OPENAI_API_KEY: "sk-fi-invalid-key" });
     const s3EmailId = await insertInboundEmail(systemId, accountId, "OpenAI fail path", "Please draft a response for account billing question.");
     const s3Row = await processUntilSettled(s3EmailId);
     const s3Db = await db.query(
@@ -214,7 +225,9 @@ async function main() {
 
   await runScenario("SCENARIO_4_NETWORK_DROP", async () => {
     // Scenario 4: Network drop (proxy blackhole)
-    process.env.OPENAI_API_KEY = envSnapshot.OPENAI_API_KEY;
+    if (runtimeSnapshot.OPENAI_API_KEY) {
+      await setRuntimeConfigValues({ OPENAI_API_KEY: runtimeSnapshot.OPENAI_API_KEY });
+    }
     process.env.HTTP_PROXY = "http://127.0.0.1:9";
     process.env.HTTPS_PROXY = "http://127.0.0.1:9";
     const s4a = await callLlm("Reply with exactly: ok", { task: "fi_network_drop_a" });
@@ -230,7 +243,14 @@ async function main() {
 
   await runScenario("SCENARIO_5_RAG_FAILURE", async () => {
     // Scenario 5: RAG failure -> fallback metadata/log
-    process.env.OPENAI_API_KEY = "sk-fi-invalid-key";
+    if (!runtimeSnapshot.OPENAI_API_KEY) {
+      logBlock("SCENARIO_5_RAG_FAILURE", {
+        blocked: true,
+        reason: "No runtime OpenAI key configured; cannot run invalid-key RAG fallback test safely.",
+      });
+      return;
+    }
+    await setRuntimeConfigValues({ OPENAI_API_KEY: "sk-fi-invalid-key" });
     const s5EmailId = await insertInboundEmail(systemId, accountId, "RAG fail path", "Need precise pricing and discount policy details.");
     await db.query(
     `UPDATE emails
@@ -267,7 +287,14 @@ async function main() {
 
   await runScenario("SCENARIO_6_WORKER_LOOP_STRESS", async () => {
     // Scenario 6: Worker loop stress without external breaker dependency.
-    process.env.OPENAI_API_KEY = "sk-fi-invalid-key";
+    if (!runtimeSnapshot.OPENAI_API_KEY) {
+      logBlock("SCENARIO_6_WORKER_LOOP_STRESS", {
+        blocked: true,
+        reason: "No runtime OpenAI key configured; cannot run invalid-key worker stress test safely.",
+      });
+      return;
+    }
+    await setRuntimeConfigValues({ OPENAI_API_KEY: "sk-fi-invalid-key" });
     const s6EmailId = await insertInboundEmail(systemId, accountId, "Loop stress seed", "Need answer for pricing quickly.");
     const s6Settled = await processUntilSettled(s6EmailId);
     const s6Before = await db.query(
@@ -364,7 +391,9 @@ async function main() {
     });
   });
 
-  process.env.OPENAI_API_KEY = envSnapshot.OPENAI_API_KEY;
+  if (runtimeSnapshot.OPENAI_API_KEY) {
+    await setRuntimeConfigValues({ OPENAI_API_KEY: runtimeSnapshot.OPENAI_API_KEY });
+  }
   process.env.HTTP_PROXY = envSnapshot.HTTP_PROXY;
   process.env.HTTPS_PROXY = envSnapshot.HTTPS_PROXY;
 

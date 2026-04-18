@@ -25,6 +25,39 @@ export interface HealthData {
   >;
 }
 
+type DiagnosticsCheck = {
+  check: string;
+  ok: boolean;
+  error?: string;
+  cause?: string;
+  fix?: string;
+};
+
+type DiagnosticsRunResponse = {
+  ok?: boolean;
+  checks?: DiagnosticsCheck[];
+};
+
+type ConnectionCheck = {
+  ok: boolean;
+  error: string | null;
+  cause?: string | null;
+  fix?: string | null;
+};
+
+type ConnectionsResponse = Record<string, ConnectionCheck>;
+
+const HEALTH_ERROR_CODES = new Set([
+  "SYSTEM_HEALTH_CRITICAL",
+  "SYSTEM_HEALTH_UNREACHABLE",
+  "SYSTEM_HEALTH_RATE_LIMIT",
+  "SYSTEM_HEALTH_REPAIR_REQUIRED",
+]);
+
+function fixPathForIssue(name: string): string {
+  return name.toLowerCase().includes("gmail") ? "/onboarding" : "/settings";
+}
+
 export function SystemHealthBar() {
   const { setGlobalError, clearGlobalError, globalError } = useErrorCenter();
   const [health, setHealth] = useState<HealthData | null>(null);
@@ -38,9 +71,188 @@ export function SystemHealthBar() {
     globalErrorCodeRef.current = globalError?.code ?? null;
   }, [globalError]);
 
+  async function runAutoRepair() {
+    const issues: Array<{ name: string; cause: string; fix: string; fixNowPath: string }> = [];
+
+    try {
+      const diagnosticsRes = await fetch("/api/system/diagnostics/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      });
+      const diagnosticsBody = (await diagnosticsRes.json().catch(() => null)) as DiagnosticsRunResponse | null;
+
+      if (!diagnosticsRes.ok) {
+        const fallback = normalizeError(diagnosticsBody ?? `diagnostics_http_${diagnosticsRes.status}`, {
+          source: "ui",
+          operation: "system-health-repair-diagnostics",
+          fallbackStatus: diagnosticsRes.status,
+        });
+        issues.push({
+          name: "diagnostics",
+          cause: fallback.reason,
+          fix: fallback.fix,
+          fixNowPath: "/settings",
+        });
+      } else if (Array.isArray(diagnosticsBody?.checks)) {
+        for (const check of diagnosticsBody.checks) {
+          if (check.ok) continue;
+          issues.push({
+            name: check.check,
+            cause: check.cause ?? check.error ?? "diagnostic_failed",
+            fix: check.fix ?? "Review service configuration and retry diagnostics.",
+            fixNowPath: fixPathForIssue(check.check),
+          });
+        }
+      }
+    } catch (error) {
+      const fallback = normalizeError(error, {
+        source: "ui",
+        operation: "system-health-repair-diagnostics",
+        fallbackStatus: 503,
+      });
+      issues.push({
+        name: "diagnostics",
+        cause: fallback.reason,
+        fix: fallback.fix,
+        fixNowPath: "/settings",
+      });
+    }
+
+    try {
+      const connectionsRes = await fetch("/api/system/connections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets: ["db", "openai", "gmail"] }),
+        credentials: "include",
+      });
+      const connectionsBody = (await connectionsRes.json().catch(() => null)) as ConnectionsResponse | null;
+
+      if (!connectionsRes.ok) {
+        const fallback = normalizeError(connectionsBody ?? `connections_http_${connectionsRes.status}`, {
+          source: "ui",
+          operation: "system-health-repair-connections",
+          fallbackStatus: connectionsRes.status,
+        });
+        issues.push({
+          name: "connections",
+          cause: fallback.reason,
+          fix: fallback.fix,
+          fixNowPath: "/settings",
+        });
+      } else if (connectionsBody && typeof connectionsBody === "object") {
+        const entries = Object.entries(connectionsBody) as Array<[string, ConnectionCheck]>;
+        for (const [name, status] of entries) {
+          if (status.ok) continue;
+          issues.push({
+            name,
+            cause: status.cause ?? status.error ?? "connection_failed",
+            fix: status.fix ?? "Reconfigure the failing dependency and retry checks.",
+            fixNowPath: fixPathForIssue(name),
+          });
+        }
+      }
+    } catch (error) {
+      const fallback = normalizeError(error, {
+        source: "ui",
+        operation: "system-health-repair-connections",
+        fallbackStatus: 503,
+      });
+      issues.push({
+        name: "connections",
+        cause: fallback.reason,
+        fix: fallback.fix,
+        fixNowPath: "/settings",
+      });
+    }
+
+    try {
+      const healthRes = await fetch("/api/system/health", { credentials: "include" });
+      if (healthRes.ok) {
+        const data = (await healthRes.json()) as HealthData;
+        setHealth(data);
+        if (data.overall_status !== "down") {
+          clearGlobalError({ force: true });
+          return;
+        }
+
+        const downServices = Object.entries(data.services ?? {})
+          .filter(([, service]) => service.status === "down")
+          .map(([name, service]) => `${name}${service.error_message ? `: ${service.error_message}` : ""}`)
+          .slice(0, 3)
+          .join(" | ");
+        issues.push({
+          name: "system_health",
+          cause: downServices || "Services are still reported as down.",
+          fix: "Repair the failing dependencies and run diagnostics again.",
+          fixNowPath: "/settings",
+        });
+      } else {
+        const body = await healthRes.json().catch(() => null);
+        const fallback = normalizeError(body ?? `system_health_http_${healthRes.status}`, {
+          source: "ui",
+          operation: "system-health-repair-health",
+          fallbackStatus: healthRes.status,
+        });
+        issues.push({
+          name: "system_health",
+          cause: fallback.reason,
+          fix: fallback.fix,
+          fixNowPath: "/settings",
+        });
+      }
+    } catch (error) {
+      const fallback = normalizeError(error, {
+        source: "ui",
+        operation: "system-health-repair-health",
+        fallbackStatus: 503,
+      });
+      issues.push({
+        name: "system_health",
+        cause: fallback.reason,
+        fix: fallback.fix,
+        fixNowPath: "/settings",
+      });
+    }
+
+    const primaryIssue = issues[0] ?? {
+      name: "system_health",
+      cause: "Health checks could not confirm recovery.",
+      fix: "Review runtime services and credentials, then retry diagnostics.",
+      fixNowPath: "/settings",
+    };
+
+    const unresolved = normalizeError(
+      {
+        code: "SYSTEM_HEALTH_REPAIR_REQUIRED",
+        category: "STATE",
+        severity: "critical",
+        retryable: true,
+        autoRecoverable: false,
+        message: "Automatic fix did not fully recover system health",
+        reason: primaryIssue.cause,
+        fix: primaryIssue.fix,
+        fixNowPath: primaryIssue.fixNowPath,
+        status: 503,
+        retryAfterMs: 5_000,
+      },
+      { source: "ui", operation: "system-health-repair", fallbackStatus: 503 },
+    );
+
+    setGlobalError(
+      unresolved,
+      async () => {
+        await checkHealth();
+      },
+      async () => {
+        await runAutoRepair();
+      },
+    );
+  }
+
   async function checkHealth() {
     try {
-      const res = await fetch("/api/system/health");
+      const res = await fetch("/api/system/health", { credentials: "include" });
       if (res.ok) {
         const data = (await res.json()) as HealthData;
         setHealth(data);
@@ -70,10 +282,16 @@ export function SystemHealthBar() {
             { source: "ui", operation: "system-health-poll", fallbackStatus: 503 },
           );
 
-          setGlobalError(critical, async () => {
-            await checkHealth();
-          });
-        } else if (globalErrorCodeRef.current === "SYSTEM_HEALTH_CRITICAL" || globalErrorCodeRef.current === "SYSTEM_HEALTH_UNREACHABLE") {
+          setGlobalError(
+            critical,
+            async () => {
+              await checkHealth();
+            },
+            async () => {
+              await runAutoRepair();
+            },
+          );
+        } else if (HEALTH_ERROR_CODES.has(globalErrorCodeRef.current ?? "")) {
           clearGlobalError({ force: true });
         }
       } else {
@@ -83,6 +301,30 @@ export function SystemHealthBar() {
           operation: "system-health-http",
           fallbackStatus: res.status,
         });
+
+        if (res.status === 429 || fallback.code === "RATE_LIMIT") {
+          const rateLimited = normalizeError(
+            {
+              ...fallback,
+              code: "SYSTEM_HEALTH_RATE_LIMIT",
+              category: "RATE_LIMIT",
+              severity: "medium",
+              retryable: true,
+              autoRecoverable: true,
+              message: "Health checks are temporarily rate limited",
+              reason: fallback.reason,
+              fix: "Wait a few seconds and retry. Monitoring resumes automatically.",
+              status: 429,
+              retryAfterMs: fallback.retryAfterMs ?? 8_000,
+            },
+            { source: "ui", operation: "system-health-http", fallbackStatus: 429 },
+          );
+
+          setGlobalError(rateLimited, async () => {
+            await checkHealth();
+          });
+          return;
+        }
 
         const unavailable = normalizeError(
           {
@@ -101,9 +343,15 @@ export function SystemHealthBar() {
           { source: "ui", operation: "system-health-http", fallbackStatus: res.status },
         );
 
-        setGlobalError(unavailable, async () => {
-          await checkHealth();
-        });
+        setGlobalError(
+          unavailable,
+          async () => {
+            await checkHealth();
+          },
+          async () => {
+            await runAutoRepair();
+          },
+        );
       }
     } catch (error) {
       const fallback = normalizeError(error, {
@@ -130,9 +378,15 @@ export function SystemHealthBar() {
         { source: "ui", operation: "system-health-fetch", fallbackStatus: 503 },
       );
 
-      setGlobalError(unavailable, async () => {
-        await checkHealth();
-      });
+      setGlobalError(
+        unavailable,
+        async () => {
+          await checkHealth();
+        },
+        async () => {
+          await runAutoRepair();
+        },
+      );
     } finally {
       setLoading(false);
     }

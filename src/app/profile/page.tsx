@@ -2,8 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AlertTriangle, BarChart3, BrainCircuit, CheckCircle2, Mail, RefreshCcw, RotateCcw, ShieldAlert, ShieldCheck, Unplug } from "lucide-react";
+import { InlineErrorCard } from "../../components/errors/InlineErrorCard";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { useScrollCollapse } from "../../components/layout/useScrollCollapse";
+import { fetchJsonWithAppError, toAppError } from "../../lib/fetchWithAppError";
+import type { AppError } from "../../lib/errorNormalizer";
 
 type ProfileSummary = {
   connected_email: string | null;
@@ -82,14 +85,18 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<AppError | null>(null);
   const { collapsed: heroCollapsed, onScroll: onProfileScroll } = useScrollCollapse({ threshold: 72 });
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/profile/summary", { credentials: "include" });
-      const json = (await res.json()) as ProfileSummary;
+      const json = await fetchJsonWithAppError<ProfileSummary>("/api/profile/summary", { credentials: "include" }, { retries: 1 });
       setSummary(json);
+      setError(null);
+    } catch (err) {
+      setSummary(null);
+      setError(toAppError(err));
     } finally {
       setLoading(false);
     }
@@ -117,9 +124,9 @@ export default function ProfilePage() {
     () =>
       summary
         ? [
-            { label: "Gmail", ok: summary.services.gmail },
-            { label: "Supabase", ok: summary.services.supabase },
-            { label: "OpenAI", ok: summary.services.openai },
+            { label: "Gmail", ok: Boolean(summary.services?.gmail) },
+            { label: "Supabase", ok: Boolean(summary.services?.supabase) },
+            { label: "OpenAI", ok: Boolean(summary.services?.openai) },
           ]
         : [],
     [summary],
@@ -154,6 +161,17 @@ export default function ProfilePage() {
         />
 
         <section className="grid gap-4 lg:grid-cols-[1fr_1.4fr]">
+          {error && (
+            <div className="lg:col-span-2">
+              <InlineErrorCard
+                error={error}
+                onRetry={async () => {
+                  await refresh();
+                }}
+              />
+            </div>
+          )}
+
           <div className="rounded-[20px] bg-[color:var(--surface-elevated)] px-6 py-6 shadow-sm">
             <div className="flex items-center gap-3">
               <div className="app-accent-bg flex h-10 w-10 items-center justify-center rounded-full">

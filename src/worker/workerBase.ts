@@ -10,6 +10,7 @@
 
 import { recordWorkerHeartbeat } from "../db/systemHealth";
 import { handleWorkerError } from "../lib/workerErrorHandler";
+import { emitSystemSignal } from "../lib/systemSignals";
 import { logger } from "../utils/logger";
 
 // ── Graceful shutdown ─────────────────────────────────────────────────
@@ -187,6 +188,16 @@ export async function runWorkerLoop(config: WorkerConfig): Promise<void> {
       if (typeof appError.retryAfterMs === "number" && Number.isFinite(appError.retryAfterMs)) {
         backoff.currentMs = Math.max(backoff.baseMs, Math.min(backoff.maxMs, appError.retryAfterMs));
       }
+      void emitSystemSignal("WORKER_LOOP_RETRY", {
+        state: "RETRY_SCHEDULED",
+        error: appError.reason,
+        meta: {
+          worker: config.name,
+          reason: appError.reason,
+          consecutiveFailures: backoff.consecutiveFailures,
+          nextBackoffMs: getBackoffMs(backoff),
+        },
+      });
     }
 
     if (isShutdownRequested()) break;

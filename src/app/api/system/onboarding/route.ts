@@ -247,7 +247,7 @@ async function validateOpenAi(overrideKey?: string) {
       ...mapSystemError("no_api_key", {
         error: "OPENAI_MISSING_KEY",
         cause: "missing_api_key",
-        fix: "Set OPENAI_API_KEY and restart the app.",
+        fix: "Add your OpenAI key in onboarding Step 1 and retry.",
       }),
     };
   }
@@ -353,7 +353,7 @@ async function validateOAuth(origin: string, draft?: OnboardingDraft) {
         ...mapSystemError("missing_oauth_env", {
           error: "OAUTH_ENV_MISSING",
           cause: "Missing GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, or GMAIL_REDIRECT_URI.",
-          fix: "Set all Gmail OAuth env vars and restart the app.",
+          fix: "Enter Google OAuth Client ID, Client Secret, and Redirect URI in onboarding Step 3.",
         }),
         expectedRedirectUri: expected,
         remediationStep: "oauth",

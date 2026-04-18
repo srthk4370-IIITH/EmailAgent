@@ -37,7 +37,7 @@ async function checkOpenAi() {
       const mapped = mapSystemError("no_api_key", {
         error: "OPENAI_MISSING_KEY",
         cause: "missing_api_key",
-        fix: "Set OPENAI_API_KEY in env and restart.",
+        fix: "Add your OpenAI key in onboarding Step 1, then retry diagnostics.",
       });
       return failResult(mapped.error, mapped.cause, mapped.fix);
     }

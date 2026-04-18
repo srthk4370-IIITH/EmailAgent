@@ -6,7 +6,7 @@ async function POSTHandler() {
     {
       ok: false,
       message:
-        "Gmail is configured at the workspace level through server environment variables. Remove GMAIL_REFRESH_TOKEN to fully disconnect it.",
+        "Use onboarding Step 4 to reconnect or switch the Gmail account. This endpoint does not delete account history directly.",
     },
     { status: 409 },
   );

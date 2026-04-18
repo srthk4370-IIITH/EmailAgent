@@ -27,6 +27,7 @@ type StoredDraftEnvelope = {
 function getPrimarySecretMaterial() {
   return (
     getRuntimeConfigSync("ONBOARDING_DRAFT_SECRET") ||
+    getRuntimeConfigSync("AUTH_SECRET") ||
     getRuntimeConfigSync("MIDDLEWARE_VERIFY_SECRET") ||
     getRuntimeConfigSync("DATABASE_URL") ||
     "local-dev-onboarding-draft-secret"

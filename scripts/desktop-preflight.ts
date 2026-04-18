@@ -41,23 +41,48 @@ function readPackageJsonScripts(): Record<string, string> {
 }
 
 function commandAvailable(command: string, args: string[] = ["--version"]): { ok: boolean; detail: string } {
-  const executable = process.platform === "win32" && (command === "npm" || command === "npx") ? `${command}.cmd` : command;
-  const result = spawnSync(executable, args, {
-    cwd: process.cwd(),
-    encoding: "utf8",
-  });
+  const candidates: string[] = [];
+  if (process.platform === "win32" && (command === "npm" || command === "npx")) {
+    candidates.push(`${command}.cmd`);
+  }
+  candidates.push(command);
 
-  if (result.error) {
-    return { ok: false, detail: result.error.message };
+  // Rust is commonly installed to ~/.cargo/bin without PATH updates in fresh shells.
+  if (process.platform === "win32" && process.env.USERPROFILE) {
+    candidates.push(path.join(process.env.USERPROFILE, ".cargo", "bin", `${command}.exe`));
+  }
+  if (process.platform !== "win32" && process.env.HOME) {
+    candidates.push(path.join(process.env.HOME, ".cargo", "bin", command));
   }
 
-  if ((result.status ?? 1) !== 0) {
-    const stderr = (result.stderr ?? "").trim();
-    return { ok: false, detail: stderr.length > 0 ? stderr : `exit_code=${result.status ?? 1}` };
+  const tried = new Set<string>();
+  let lastDetail = "command failed";
+
+  for (const executable of candidates) {
+    if (tried.has(executable)) continue;
+    tried.add(executable);
+
+    const result = spawnSync(executable, args, {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    });
+
+    if (result.error) {
+      lastDetail = result.error.message;
+      continue;
+    }
+
+    if ((result.status ?? 1) !== 0) {
+      const stderr = (result.stderr ?? "").trim();
+      lastDetail = stderr.length > 0 ? stderr : `exit_code=${result.status ?? 1}`;
+      continue;
+    }
+
+    const stdout = (result.stdout ?? "").trim().split(/\r?\n/)[0] ?? "ok";
+    return { ok: true, detail: stdout || "ok" };
   }
 
-  const stdout = (result.stdout ?? "").trim().split(/\r?\n/)[0] ?? "ok";
-  return { ok: true, detail: stdout || "ok" };
+  return { ok: false, detail: lastDetail };
 }
 
 function windowsMsvcSdkAvailable(): { ok: boolean; detail: string } {

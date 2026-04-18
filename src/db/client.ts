@@ -126,7 +126,18 @@ let schemaInitPromise: Promise<void> | null = null;
 async function initDbSchemaInternal(): Promise<void> {
   const client = await db.connect();
   const previousQuery = db.query.bind(db);
-  (db as unknown as { query: typeof db.query }).query = client.query.bind(client);
+  let initQueryQueue: Promise<unknown> = Promise.resolve();
+  const queuedClientQuery = ((...args: unknown[]) => {
+    const run = () => (client.query as (...clientArgs: unknown[]) => unknown)(...args);
+    const queued = initQueryQueue.then(run, run);
+    initQueryQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  }) as typeof db.query;
+
+  (db as unknown as { query: typeof db.query }).query = queuedClientQuery;
   try {
     await client.query(`SET statement_timeout TO 0;`);
     await client.query(`SET lock_timeout TO 0;`);

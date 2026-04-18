@@ -1,5 +1,6 @@
 import { db } from "./client";
 import { canTransition } from "../core/state";
+import { emitSystemSignal } from "../lib/systemSignals";
 import { logger } from "../utils/logger";
 import { sanitizeStoredEmailText } from "../utils/sanitizeEmail";
 
@@ -597,12 +598,14 @@ export async function scheduleEmailRetry(
   errorMessage: string,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
 ): Promise<{ state: "ERROR_TEMP" | "READY_TO_SEND" | "DEAD"; attemptCount: number; nextAttemptAt: string | null }> {
-  const current = await db.query<{ attempt_count: number; state: EmailState }>(
-    `SELECT COALESCE(attempt_count, 0) AS attempt_count, state FROM emails WHERE id = $1 LIMIT 1`,
+  const current = await db.query<{ attempt_count: number; state: EmailState; trace_id: string | null; gmail_id: string | null }>(
+    `SELECT COALESCE(attempt_count, 0) AS attempt_count, state, trace_id, gmail_id FROM emails WHERE id = $1 LIMIT 1`,
     [id],
   );
   const previousAttemptCount = Number(current.rows[0]?.attempt_count ?? 0);
   const previousState = current.rows[0]?.state;
+  const traceId = current.rows[0]?.trace_id ?? `signal:worker_loop_retry:${id}`;
+  const gmailId = current.rows[0]?.gmail_id ?? null;
   const attemptCount = previousAttemptCount + 1;
 
   if (attemptCount >= maxAttempts) {
@@ -618,6 +621,18 @@ export async function scheduleEmailRetry(
        WHERE id = $3`,
       [attemptCount, errorMessage, id],
     );
+    void emitSystemSignal("WORKER_LOOP_RETRY", {
+      state: "DEAD_LETTER",
+      traceId,
+      gmailId,
+      error: errorMessage,
+      meta: {
+        emailId: id,
+        attemptCount,
+        maxAttempts,
+        nextAttemptAt: null,
+      },
+    });
     return { state: "DEAD", attemptCount, nextAttemptAt: null };
   }
 
@@ -637,10 +652,25 @@ export async function scheduleEmailRetry(
     [attemptCount, delaySeconds, errorMessage, id, retryState],
   );
 
+  const nextAttemptAt = delayed.rows[0]?.next_attempt_at ?? null;
+  void emitSystemSignal("WORKER_LOOP_RETRY", {
+    state: "RETRY_SCHEDULED",
+    traceId,
+    gmailId,
+    error: errorMessage,
+    meta: {
+      emailId: id,
+      attemptCount,
+      maxAttempts,
+      nextAttemptAt,
+      retryState,
+    },
+  });
+
   return {
     state: retryState,
     attemptCount,
-    nextAttemptAt: delayed.rows[0]?.next_attempt_at ?? null,
+    nextAttemptAt,
   };
 }
 
@@ -674,6 +704,40 @@ export async function markReadyToSend(id: number): Promise<void> {
   if (!transitioned) {
     throw new Error(`CAS_ABORT_AWAITING_REVIEW_TO_READY_TO_SEND:${id}`);
   }
+}
+
+export async function deferReadyToSendInDryMode(id: number, delaySeconds = 30): Promise<string | null> {
+  const result = await db.query<{ next_attempt_at: string }>(
+    `
+      UPDATE emails
+      SET next_attempt_at = NOW() + ($2 * INTERVAL '1 second'),
+          last_step = 'send_skipped_dry_mode',
+          updated_at = NOW()
+      WHERE id = $1
+        AND state = 'READY_TO_SEND'
+      RETURNING to_char(next_attempt_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS next_attempt_at
+    `,
+    [id, Math.max(5, Math.floor(delaySeconds))],
+  );
+  return result.rows[0]?.next_attempt_at ?? null;
+}
+
+export async function releaseDryModeReadyToSendBacklog(accountId?: number | null): Promise<number> {
+  const result = await db.query(
+    `
+      UPDATE emails
+      SET next_attempt_at = NULL,
+          updated_at = NOW()
+      WHERE state = 'READY_TO_SEND'
+        AND COALESCE(last_step, '') = 'send_skipped_dry_mode'
+        AND next_attempt_at IS NOT NULL
+        AND ($1::int IS NULL OR account_id = $1)
+      RETURNING id
+    `,
+    [accountId ?? null],
+  );
+
+  return result.rowCount ?? 0;
 }
 
 export type EmailListFilter = "all" | "inbox" | "sent" | "rejected";

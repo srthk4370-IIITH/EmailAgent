@@ -145,70 +145,92 @@ async function setupMockedOnboarding(page: Page, failingStep: StepId) {
 }
 
 async function goToStep(page: Page, step: StepId) {
-  await page.getByTestId(`step-nav-${step}`).click();
+  const stepNav = page.getByTestId(`step-nav-${step}`);
+  await expect(stepNav).toBeVisible();
+  await stepNav.click();
+  await expect(page.getByTestId("button-validate-step")).toBeVisible();
+}
+
+async function openOnboarding(page: Page) {
+  await page.goto("/onboarding", { waitUntil: "domcontentloaded" });
+  await expect(page.getByTestId("step-nav-openai")).toBeVisible();
+  await expect(page.getByTestId("step-nav-final_validation")).toBeVisible();
+  await expect(page.getByTestId("button-validate-step")).toBeVisible();
+}
+
+async function clickValidateAndWait(page: Page) {
+  await Promise.all([
+    page.waitForResponse((response) => {
+      if (!response.url().includes("/api/system/onboarding")) return false;
+      if (response.request().method() !== "POST") return false;
+      const body = response.request().postData() ?? "";
+      return body.includes('"action":"validate_step"') || body.includes('"action":"run_final_validation"');
+    }),
+    page.getByTestId("button-validate-step").click(),
+  ]);
 }
 
 test("Step 1 openai failure then recovery", async ({ page }) => {
   await setupMockedOnboarding(page, "openai");
-  await page.goto("/onboarding");
+  await openOnboarding(page);
 
   await page.getByTestId("input-openai-key").fill("sk-test");
-  await page.getByTestId("button-validate-step").click();
+  await clickValidateAndWait(page);
   await expect(page.getByText("OPENAI_FAILED")).toBeVisible();
 
-  await page.getByTestId("button-validate-step").click();
+  await clickValidateAndWait(page);
   await expect(page.getByText("OPENAI_FAILED")).toHaveCount(0);
 });
 
 test("Step 2 database failure then recovery", async ({ page }) => {
   await setupMockedOnboarding(page, "database");
-  await page.goto("/onboarding");
+  await openOnboarding(page);
 
   await goToStep(page, "database");
   await page.getByTestId("input-database-url").fill("postgresql://user:pass@localhost:5432/db");
-  await page.getByTestId("button-validate-step").click();
+  await clickValidateAndWait(page);
   await expect(page.getByText("DATABASE_FAILED")).toBeVisible();
 
-  await page.getByTestId("button-validate-step").click();
+  await clickValidateAndWait(page);
   await expect(page.getByText("DATABASE_FAILED")).toHaveCount(0);
 });
 
 test("Step 3 oauth failure then recovery", async ({ page }) => {
   await setupMockedOnboarding(page, "oauth");
-  await page.goto("/onboarding");
+  await openOnboarding(page);
 
   await goToStep(page, "oauth");
   await page.getByTestId("input-client-id").fill("client-id");
   await page.getByTestId("input-client-secret").fill("client-secret");
   await page.getByTestId("input-redirect-uri").fill("http://127.0.0.1:3000/api/auth/google/callback");
-  await page.getByTestId("button-validate-step").click();
+  await clickValidateAndWait(page);
   await expect(page.getByText("OAUTH_FAILED")).toBeVisible();
 
-  await page.getByTestId("button-validate-step").click();
+  await clickValidateAndWait(page);
   await expect(page.getByText("OAUTH_FAILED")).toHaveCount(0);
 });
 
 test("Step 4 gmail failure then recovery", async ({ page }) => {
   await setupMockedOnboarding(page, "gmail");
-  await page.goto("/onboarding");
+  await openOnboarding(page);
 
   await goToStep(page, "gmail");
-  await page.getByTestId("button-validate-step").click();
+  await clickValidateAndWait(page);
   await expect(page.getByText("GMAIL_FAILED")).toBeVisible();
 
-  await page.getByTestId("button-validate-step").click();
+  await clickValidateAndWait(page);
   await expect(page.getByText("GMAIL_FAILED")).toHaveCount(0);
 });
 
 test("Step 5 final validation failure then recovery", async ({ page }) => {
   await setupMockedOnboarding(page, "final_validation");
-  await page.goto("/onboarding");
+  await openOnboarding(page);
 
   await goToStep(page, "final_validation");
-  await page.getByTestId("button-validate-step").click();
+  await clickValidateAndWait(page);
   await expect(page.getByText("Missing scopes")).toBeVisible();
 
-  await page.getByTestId("button-validate-step").click();
+  await clickValidateAndWait(page);
   await expect(page.getByText("Missing scopes")).toHaveCount(0);
   await expect(page.getByTestId("step-nav-final_validation")).toContainText("Passed");
 });

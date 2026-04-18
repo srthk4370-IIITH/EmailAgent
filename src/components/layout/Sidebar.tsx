@@ -280,7 +280,7 @@ export function Sidebar({
 
             {activeAccount?.status === "needs_reauth" ? (
               <a
-                href="/api/auth/google"
+                href="/api/auth/google?prompt=consent%20select_account"
                 className="app-button-primary app-focus-ring mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold"
               >
                 <RefreshCcw className="h-3.5 w-3.5" />

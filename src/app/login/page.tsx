@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 const LOGIN_SUGGESTIONS = [
   "Use one active account per environment for predictable OAuth callbacks.",
@@ -11,12 +12,35 @@ const LOGIN_SUGGESTIONS = [
   "Archive from Inbox quick actions to keep working set focused.",
 ];
 
+type TauriDesktopWindow = Window & {
+  __TAURI__?: unknown;
+  __TAURI_INTERNALS__?: unknown;
+};
+
+function isDesktopTauri(): boolean {
+  if (typeof window === "undefined") return false;
+  const maybeDesktop = window as TauriDesktopWindow;
+  return Boolean(maybeDesktop.__TAURI__ || maybeDesktop.__TAURI_INTERNALS__);
+}
+
+async function openInSystemBrowser(url: string): Promise<boolean> {
+  if (!isDesktopTauri()) return false;
+  try {
+    await invoke("open_external_url", { url });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function LoginInner() {
   const router = useRouter();
   const params = useSearchParams();
   const err = params.get("error");
   const [checked, setChecked] = useState(false);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
+  const [desktopSignInBusy, setDesktopSignInBusy] = useState(false);
+  const [desktopSignInMessage, setDesktopSignInMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (checked) return;
@@ -40,10 +64,75 @@ function LoginInner() {
 
   const errorLabel =
     err === "oauth_config"
-      ? "Google sign-in is not configured (check GMAIL_CLIENT_ID / SECRET)."
+      ? "Google sign-in is not configured. Complete onboarding Step 3 (OAuth setup)."
       : err
         ? `Sign-in failed (${err}).`
         : null;
+
+  async function startGoogleSignIn() {
+    const authPath = "/api/auth/google?prompt=consent%20select_account";
+
+    if (!isDesktopTauri()) {
+      window.location.assign(authPath);
+      return;
+    }
+
+    if (desktopSignInBusy) return;
+
+    const handoffId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
+
+    const authUrl = new URL(authPath, window.location.origin);
+    authUrl.searchParams.set("desktop_handoff", handoffId);
+
+    setDesktopSignInBusy(true);
+    setDesktopSignInMessage("Opening default browser for Google sign-in...");
+
+    try {
+      const opened = await openInSystemBrowser(authUrl.toString());
+      if (!opened) {
+        window.location.assign(authUrl.pathname + authUrl.search);
+        return;
+      }
+
+      setDesktopSignInMessage("Complete sign-in in the browser. The desktop app will continue automatically.");
+      const deadline = Date.now() + 180_000;
+
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1200));
+
+        const consumeRes = await fetch("/api/auth/desktop/handoff/consume", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ handoffId }),
+        });
+
+        if (consumeRes.status === 202) {
+          continue;
+        }
+
+        if (consumeRes.ok) {
+          router.replace("/");
+          return;
+        }
+
+        const payload = await consumeRes.json().catch(() => null);
+        const reason = typeof payload?.error === "string" ? payload.error : "desktop_handoff_failed";
+        setDesktopSignInMessage(`Desktop sign-in failed (${reason}). Please try again.`);
+        setDesktopSignInBusy(false);
+        return;
+      }
+
+      setDesktopSignInMessage("Timed out waiting for browser sign-in. Please try again.");
+    } catch {
+      setDesktopSignInMessage("Could not complete desktop sign-in. Please try again.");
+    } finally {
+      setDesktopSignInBusy(false);
+    }
+  }
 
   if (!checked) {
     return (
@@ -70,8 +159,10 @@ function LoginInner() {
           <code className="rounded bg-[color:var(--surface-secondary)] px-1.5 py-0.5 text-xs app-accent-text">/api/auth/google/callback</code>
         </p>
         {errorLabel && <p className="mt-4 rounded-lg border app-state-error px-3 py-2 text-sm">{errorLabel}</p>}
-        <a
-          href="/api/auth/google"
+        <button
+          type="button"
+          onClick={() => void startGoogleSignIn()}
+          disabled={desktopSignInBusy}
           className="app-button-primary mt-6 flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition"
         >
           <svg className="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
@@ -92,8 +183,12 @@ function LoginInner() {
               d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
             />
           </svg>
-          Continue with Google
-        </a>
+          {desktopSignInBusy ? "Waiting for browser sign-in..." : "Continue with Google"}
+        </button>
+        <p className="mt-2 text-xs app-text-muted">
+          Desktop app opens your default browser so your existing Google accounts are available.
+        </p>
+        {desktopSignInMessage && <p className="mt-3 text-xs app-text-secondary">{desktopSignInMessage}</p>}
         <p className="mt-5 text-center text-xs app-text-muted">
           <Link href="/" className="app-text-secondary hover:opacity-80">
             Back home

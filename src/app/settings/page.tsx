@@ -21,9 +21,10 @@ import {
   Zap,
 } from "lucide-react";
 
+import { InlineErrorCard } from "../../components/errors/InlineErrorCard";
 import { useTheme } from "../../components/ThemeProvider";
 import { useScrollCollapse } from "../../components/layout/useScrollCollapse";
-import { normalizeApiErrorPayload, normalizeError } from "../../lib/errorNormalizer";
+import { normalizeApiErrorPayload, normalizeError, type AppError } from "../../lib/errorNormalizer";
 import { getCategoryTone } from "../../lib/mailVisuals";
 
 type Config = {
@@ -87,7 +88,7 @@ export default function SettingsPage() {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryThreshold, setNewCategoryThreshold] = useState(0.7);
   const [newCategoryMode, setNewCategoryMode] = useState<"assist" | "manual" | "auto">("assist");
-  const [configError, setConfigError] = useState<string | null>(null);
+  const [configError, setConfigError] = useState<AppError | null>(null);
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const [cleanupSummary, setCleanupSummary] = useState<{
     deletedEmails: number;
@@ -120,7 +121,7 @@ export default function SettingsPage() {
         operation: "settings_refresh_config",
         fallbackStatus: 500,
       });
-      setConfigError(`${appError.message}. ${appError.reason} Fix: ${appError.fix}`);
+      setConfigError(appError);
       return null;
     }
   }, []);
@@ -187,7 +188,7 @@ export default function SettingsPage() {
         operation: "settings_update_config",
         fallbackStatus: 500,
       });
-      setConfigError(`${appError.message}. ${appError.reason} Fix: ${appError.fix}`);
+      setConfigError(appError);
     } finally {
       setSaving(false);
     }
@@ -309,7 +310,7 @@ export default function SettingsPage() {
         operation: "settings_cleanup_injected",
         fallbackStatus: 500,
       });
-      setConfigError(`${appError.message}. ${appError.reason} Fix: ${appError.fix}`);
+      setConfigError(appError);
     } finally {
       setCleanupBusy(false);
     }
@@ -638,12 +639,12 @@ export default function SettingsPage() {
       </section>
 
       {configError && (
-        <section className="rounded-[16px] border app-state-error px-4 py-3 text-sm">
-          <div className="inline-flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4" />
-            {configError}
-          </div>
-        </section>
+        <InlineErrorCard
+          error={configError}
+          onRetry={async () => {
+            await refresh();
+          }}
+        />
       )}
 
       <section className="panel-surface rounded-[16px] p-5">

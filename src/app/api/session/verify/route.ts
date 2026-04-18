@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getSessionFromDB } from "../../../../db/auth";
+import { getAuthSecret } from "../../../../lib/authConfig";
 import { getRuntimeConfig } from "../../../../lib/runtimeConfig";
 import { withApiRoute } from "../../../../lib/routeErrorHandler";
 
@@ -15,7 +16,7 @@ const bodySchema = z.object({
  */
 async function POSTHandler(request: NextRequest) {
   const start = Date.now();
-  const secret = (await getRuntimeConfig("MIDDLEWARE_VERIFY_SECRET")) ?? "";
+  const secret = (await getAuthSecret()) ?? "";
   console.log(`API: Session verify reach [${request.method}]`);
   
   if (!secret || request.headers.get("x-middleware-verify") !== secret) {

@@ -5,6 +5,7 @@ const configuredOrigins = (process.env.ALLOWED_DEV_ORIGINS ?? "127.0.0.1,localho
   .filter((value) => value.length > 0);
 
 const nextConfig = {
+  output: "standalone",
   ...(configuredOrigins.length > 0 ? { allowedDevOrigins: configuredOrigins } : {}),
 };
 
