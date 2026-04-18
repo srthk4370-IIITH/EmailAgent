@@ -12,18 +12,24 @@ function copyDir(source, destination) {
   fs.cpSync(source, destination, { recursive: true, force: true });
 }
 
+function copyFile(source, destination) {
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.copyFileSync(source, destination);
+}
+
 function main() {
   const root = process.cwd();
   const standaloneSource = path.join(root, ".next", "standalone");
   const staticSource = path.join(root, ".next", "static");
   const publicSource = path.join(root, "public");
-  const workerSource = path.join(root, "dist-worker");
+  const workerSource = path.join(root, "dist", "worker.js");
 
   const runtimeRoot = path.join(root, "desktop", "runtime");
   const runtimeStandalone = path.join(runtimeRoot, ".next", "standalone");
   const runtimeStatic = path.join(runtimeStandalone, ".next", "static");
   const runtimePublic = path.join(runtimeStandalone, "public");
-  const runtimeWorker = path.join(runtimeStandalone, "dist-worker");
+  const runtimeWorkerDir = path.join(runtimeStandalone, "dist");
+  const runtimeWorker = path.join(runtimeWorkerDir, "worker.js");
 
   assertExists("Next standalone output", standaloneSource);
   assertExists("Next static output", staticSource);
@@ -39,13 +45,28 @@ function main() {
     copyDir(publicSource, runtimePublic);
   }
 
-  copyDir(workerSource, runtimeWorker);
+  copyFile(workerSource, runtimeWorker);
 
   // Worker emit is CommonJS. Force CJS module interpretation even if parent standalone package is ESM.
   fs.writeFileSync(
-    path.join(runtimeWorker, "package.json"),
+    path.join(runtimeWorkerDir, "package.json"),
     JSON.stringify({ type: "commonjs" }, null, 2),
   );
+
+  const bundledNodeSource = process.env.BUNDLED_NODE_PATH?.trim();
+  if (bundledNodeSource && fs.existsSync(bundledNodeSource)) {
+    const nodeDestination =
+      process.platform === "win32"
+        ? path.join(runtimeRoot, "node", "node.exe")
+        : path.join(runtimeRoot, "node", "bin", "node");
+    copyFile(bundledNodeSource, nodeDestination);
+
+    if (process.platform !== "win32") {
+      fs.chmodSync(nodeDestination, 0o755);
+    }
+
+    console.log(`Bundled node runtime staged from ${bundledNodeSource}`);
+  }
 
   console.log(`Desktop runtime staged at ${runtimeRoot}`);
 }

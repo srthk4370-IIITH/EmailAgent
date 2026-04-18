@@ -26,8 +26,8 @@ This checklist prepares the project to ship inside a desktop wrapper (Electron/T
 ## 3) Wrapper integration tasks
 
 1. Choose wrapper runtime (Electron or Tauri) and define target platforms.
-2. Start the Next.js server and worker from the wrapper process manager.
-3. Load the local app URL in the wrapper window (single source of truth UI).
+2. Auto-start the Next.js standalone backend and compiled worker from wrapper startup.
+3. Load bootstrap shell first; redirect to local app URL only after `/api/health` is healthy.
 4. Route OAuth login/callback through local loopback host to preserve cookie/session origin.
 5. Configure auto-update, crash reporting, and signed builds per platform.
 

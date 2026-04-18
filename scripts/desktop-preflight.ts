@@ -322,6 +322,7 @@ function main(): void {
   const readinessFiles = [
     "src/lib/hostUtils.ts",
     "src/lib/sessionCookie.ts",
+    "src/app/api/health/route.ts",
     "src/app/api/auth/google/route.ts",
     "src/app/api/auth/google/callback/route.ts",
     "src-tauri/tauri.conf.json",
@@ -377,9 +378,10 @@ function main(): void {
         });
       } else {
         addResult(results, {
-          name: "tauri:url",
-          severity: "FAIL",
-          detail: "no window.url or build.devUrl configured",
+          name: "tauri:bootstrap_shell",
+          severity: "PASS",
+          detail:
+            "window.url/devUrl not set; app will load bundled bootstrap shell and auto-redirect after backend health passes",
         });
       }
     } catch (error) {

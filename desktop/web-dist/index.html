@@ -7,28 +7,81 @@
     <style>
       body {
         margin: 0;
-        font-family: Segoe UI, system-ui, -apple-system, sans-serif;
-        background: #0f172a;
+        font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+        background: radial-gradient(circle at top left, #1f2937 0%, #0f172a 48%, #020617 100%);
         color: #e2e8f0;
         display: grid;
         place-items: center;
         min-height: 100vh;
       }
       main {
-        max-width: 680px;
-        padding: 28px;
-        border-radius: 14px;
-        background: #111827;
-        border: 1px solid #334155;
-        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+        width: min(760px, calc(100vw - 40px));
+        padding: 30px;
+        border-radius: 16px;
+        background: #0b1220;
+        border: 1px solid #263449;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
       }
       h1 {
-        margin: 0 0 10px;
-        font-size: 22px;
+        margin: 0;
+        font-size: 24px;
       }
       p {
-        margin: 0 0 12px;
+        margin: 12px 0 0;
         line-height: 1.5;
+      }
+      .status {
+        margin-top: 14px;
+        padding: 12px 14px;
+        border-radius: 12px;
+        border: 1px solid #334155;
+        background: #111827;
+        color: #dbeafe;
+      }
+      .details {
+        margin-top: 10px;
+        color: #cbd5e1;
+        font-size: 14px;
+      }
+      .error {
+        margin-top: 14px;
+        padding: 14px;
+        border-radius: 12px;
+        border: 1px solid #7f1d1d;
+        background: rgba(127, 29, 29, 0.2);
+        color: #fecaca;
+        display: none;
+      }
+      .actions {
+        margin-top: 16px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 16px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.primary {
+        background: #0ea5e9;
+        color: #082f49;
+      }
+      button.secondary {
+        background: #334155;
+        color: #e2e8f0;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      ul {
+        margin: 10px 0 0 20px;
+        padding: 0;
+        color: #cbd5e1;
       }
       code {
         background: #020617;
@@ -36,14 +89,124 @@
         border-radius: 8px;
         padding: 2px 6px;
       }
+      .spinner {
+        margin-top: 16px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid #334155;
+        border-top-color: #38bdf8;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
     </style>
   </head>
   <body>
     <main>
-      <h1>EmailAgent Desktop Wrapper</h1>
-      <p>The desktop window expects your local runtime at <code>http://localhost:3000</code>.</p>
-      <p>If this screen appears in a packaged build, start the runtime first with <code>npm run desktop:runtime:prod</code> in the project root.</p>
-      <p>For live development with hot reload use <code>npm run desktop:tauri:dev</code>.</p>
+      <h1>EmailAgent is starting</h1>
+      <p>EmailAgent launches its local backend and worker automatically.</p>
+      <div class="status" id="status">Initializing startup checks...</div>
+      <div class="details" id="details">Waiting for local health endpoint at <code>http://127.0.0.1:3000/api/health</code>.</div>
+      <div class="spinner" id="spinner" aria-hidden="true"></div>
+
+      <div class="error" id="error"></div>
+
+      <div class="actions">
+        <button class="primary" id="retryButton" disabled>Retry startup</button>
+      </div>
+
+      <ul>
+        <li>No terminal commands are required for normal desktop use.</li>
+        <li>If startup keeps failing, reinstall the app and verify machine prerequisites.</li>
+      </ul>
     </main>
+
+    <script>
+      const FALLBACK_BACKEND_URL = "http://127.0.0.1:3000";
+      const statusEl = document.getElementById("status");
+      const detailsEl = document.getElementById("details");
+      const errorEl = document.getElementById("error");
+      const spinnerEl = document.getElementById("spinner");
+      const retryButton = document.getElementById("retryButton");
+
+      async function invokeCommand(command, payload) {
+        const internalInvoke = window.__TAURI_INTERNALS__?.invoke;
+        if (typeof internalInvoke === "function") {
+          return internalInvoke(command, payload ?? {});
+        }
+
+        const tauriInvoke = window.__TAURI__?.core?.invoke;
+        if (typeof tauriInvoke === "function") {
+          return tauriInvoke(command, payload ?? {});
+        }
+
+        throw new Error("Desktop invoke bridge unavailable.");
+      }
+
+      function showError(message) {
+        errorEl.style.display = "block";
+        errorEl.textContent = message;
+        retryButton.disabled = false;
+        spinnerEl.style.display = "none";
+      }
+
+      function showStarting(message) {
+        statusEl.textContent = "Starting services...";
+        detailsEl.textContent = message;
+        errorEl.style.display = "none";
+        retryButton.disabled = true;
+        spinnerEl.style.display = "block";
+      }
+
+      function redirectToBackend(url) {
+        statusEl.textContent = "Runtime ready. Opening app...";
+        detailsEl.textContent = "Connecting desktop UI to local backend.";
+        errorEl.style.display = "none";
+        retryButton.disabled = true;
+        spinnerEl.style.display = "block";
+        window.location.replace(url || FALLBACK_BACKEND_URL);
+      }
+
+      async function pollStatus() {
+        try {
+          const status = await invokeCommand("desktop_boot_status");
+          const state = status?.state || "starting";
+          const message = status?.message || "Waiting for startup state...";
+          const backendUrl = status?.backendUrl || FALLBACK_BACKEND_URL;
+
+          if (state === "ready") {
+            redirectToBackend(backendUrl);
+            return;
+          }
+
+          if (state === "error") {
+            statusEl.textContent = "Startup failed";
+            detailsEl.textContent = "EmailAgent could not auto-start required services.";
+            showError(message);
+            return;
+          }
+
+          showStarting(message);
+        } catch (error) {
+          showError(error instanceof Error ? error.message : "Unable to query startup status.");
+        }
+      }
+
+      retryButton.addEventListener("click", async () => {
+        retryButton.disabled = true;
+        showStarting("Retrying desktop startup...");
+        try {
+          await invokeCommand("desktop_retry_runtime_boot");
+        } catch (error) {
+          showError(error instanceof Error ? error.message : "Retry request failed.");
+        }
+      });
+
+      pollStatus();
+      window.setInterval(pollStatus, 1200);
+    </script>
   </body>
 </html>

@@ -6,9 +6,9 @@ This project uses Tauri as a native wrapper around the existing Next.js + worker
 
 - UI and APIs remain the same Next.js app.
 - Worker remains the same background process.
-- Tauri only provides native desktop window packaging.
-- Dev runtime uses `build.devUrl` (`http://localhost:3000`).
-- Packaged runtime uses `build.frontendDist` (`desktop/web-dist` fallback page).
+- Tauri packages a bootstrap shell plus bundled runtime assets.
+- On app launch, Tauri auto-starts backend + worker and waits for backend health.
+- The bootstrap shell redirects to `http://127.0.0.1:3000` only after health is ready.
 
 ## Prerequisites
 
@@ -39,10 +39,9 @@ npm run desktop:tauri:dev
 ```
 
 What this does:
-- Starts `next dev`.
-- Starts `worker`.
-- Waits for `http://localhost:3000`.
-- Launches `tauri dev`.
+- Builds standalone backend + compiled worker.
+- Stages desktop runtime bundle.
+- Launches `tauri dev` with bootstrap shell and auto-start process manager.
 
 ## Production-like local runtime (without packaging)
 
@@ -57,6 +56,12 @@ Use this when you want to validate runtime behavior with production Next output.
 
 ```bash
 npm run desktop:tauri:build
+```
+
+Alias command:
+
+```bash
+npm run tauri build
 ```
 
 This runs:
@@ -109,8 +114,9 @@ You can still make iterative changes safely:
 - Install Rust (`rustup`) and Visual Studio Build Tools.
 
 2. If desktop opens but shows blank/unreachable:
-- Confirm runtime is running at `http://localhost:3000`.
-- Run `npm run desktop:runtime:prod` or `npm run desktop:tauri:dev`.
+- Use the in-app startup error panel and click "Retry startup".
+- Verify Node.js runtime is available (system Node 20+ or bundled node binary).
+- Reinstall the desktop app if runtime files were removed/corrupted.
 
 3. If OAuth callback fails in desktop:
 - Verify `GMAIL_REDIRECT_URI` points to loopback callback host.

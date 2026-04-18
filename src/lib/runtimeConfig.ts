@@ -6,8 +6,12 @@ import dotenv from "dotenv";
 
 import { keychainStore } from "./keychainStore";
 
-dotenv.config({ path: ".env.local" });
-dotenv.config();
+const IS_PRODUCTION_RUNTIME = (process.env.NODE_ENV ?? "").toLowerCase() === "production";
+
+if (!IS_PRODUCTION_RUNTIME) {
+  dotenv.config({ path: ".env.local" });
+  dotenv.config();
+}
 
 export type RuntimeConfigKey =
   | "DATABASE_URL"
@@ -98,6 +102,10 @@ function isSecretKey(key: RuntimeConfigKey): boolean {
 }
 
 function allowLegacyEnvFallback(key: RuntimeConfigKey): boolean {
+  if (IS_PRODUCTION_RUNTIME) {
+    return false;
+  }
+
   return !USER_SUPPLIED_ONLY_KEYS.has(key);
 }
 

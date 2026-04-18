@@ -4,6 +4,8 @@ EmailAgent is a desktop AI email assistant for Gmail. It helps you triage inboun
 
 The app runs a local desktop runtime (UI + API + worker), keeps your workspace state in your configured database, and uses your own OpenAI + Google OAuth credentials.
 
+Packaged desktop behavior is one-click: after install, opening the app auto-starts backend + worker and the UI waits for health before loading.
+
 ## 1. Overview
 
 ### What the app does
@@ -53,6 +55,7 @@ Run commands:
 - App + worker (production runtime): `npm run build && npm run desktop:runtime:prod`
 - Tauri desktop dev shell: `npm run desktop:tauri:dev`
 - Build installer/app bundle: `npm run desktop:tauri:build`
+- Installer alias command: `npm run tauri build`
 
 ### Option B: Install prebuilt desktop app
 1. Download the latest installer from your release channel.
