@@ -24,7 +24,17 @@ Packaged desktop behavior is one-click: after install, opening the app auto-star
 
 ## 2. Installation
 
-### Option A: Run from source (GitHub clone)
+### Option A (Recommended): Install using root-folder installer
+
+1. In the project root folder, double-click `EmailAgent-Installer.exe`.
+2. Complete setup in the installer wizard.
+3. Launch EmailAgent Desktop from Start Menu or desktop shortcut.
+
+Notes:
+- This is the easiest tester flow.
+- After build, the installer is copied to the repo root automatically for easy finding.
+
+### Option B: Run from source (GitHub clone)
 
 Prerequisites:
 - Node.js 20+
@@ -59,12 +69,8 @@ Run commands:
 - App + worker (production runtime): `npm run build && npm run desktop:runtime:prod`
 - Tauri desktop dev shell: `npm run desktop:tauri:dev`
 - Build installer/app bundle: `npm run desktop:tauri:build`
+- Root installer output (double-click to install): `EmailAgent-Installer.exe`
 - Installer alias command: `npm run tauri build`
-
-### Option B: Install prebuilt desktop app
-1. Download the latest installer from your release channel.
-2. Run the installer.
-3. Launch EmailAgent Desktop.
 
 ### First run behavior
 - On first launch, EmailAgent opens onboarding automatically.
@@ -75,7 +81,7 @@ Run commands:
 1. `npm run typecheck` passes.
 2. `npm run desktop:preflight` shows all required checks as PASS.
 3. `npm run release:ship:checklist` passes.
-4. `npm run desktop:tauri:build` produces a desktop bundle/installer.
+4. `npm run desktop:tauri:build` produces the installer and copies `EmailAgent-Installer.exe` to the repository root.
 
 ## 3. Onboarding (step-by-step)
 
