@@ -50,6 +50,10 @@ Setup steps:
 5. Run preflight checks:
 	- `npm run desktop:preflight`
 
+Packaged installer note:
+- During desktop runtime bundling, the build process stages a bootstrap runtime env file from build-time environment values.
+- This enables clean-machine startup for packaged testing without manually creating `.env.local` on the target machine.
+
 Run commands:
 - App + worker (development runtime): `npm run desktop:runtime:dev`
 - App + worker (production runtime): `npm run build && npm run desktop:runtime:prod`

@@ -1,5 +1,15 @@
 import fs from "fs";
 import path from "path";
+import dotenv from "dotenv";
+
+const BOOTSTRAP_ENV_KEYS = [
+  "DATABASE_URL",
+  "AUTH_SECRET",
+  "MIDDLEWARE_VERIFY_SECRET",
+  "ONBOARDING_DRAFT_SECRET",
+  "ONBOARDING_DRAFT_SECRET_PREVIOUS",
+  "SESSION_COOKIE_SECURE",
+];
 
 function assertExists(label, targetPath) {
   if (!fs.existsSync(targetPath)) {
@@ -15,6 +25,36 @@ function copyDir(source, destination) {
 function copyFile(source, destination) {
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.copyFileSync(source, destination);
+}
+
+function loadBootstrapEnv(root) {
+  const mergedEnv = {};
+
+  const envSources = [
+    path.join(root, ".env"),
+    path.join(root, ".env.local"),
+  ];
+
+  for (const envPath of envSources) {
+    if (!fs.existsSync(envPath)) continue;
+    const parsed = dotenv.parse(fs.readFileSync(envPath, "utf8"));
+    Object.assign(mergedEnv, parsed);
+  }
+
+  Object.assign(mergedEnv, process.env);
+
+  const bootstrapEnv = {
+    NODE_ENV: "production",
+  };
+
+  for (const key of BOOTSTRAP_ENV_KEYS) {
+    const value = mergedEnv[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      bootstrapEnv[key] = value.trim();
+    }
+  }
+
+  return bootstrapEnv;
 }
 
 function main() {
@@ -69,6 +109,12 @@ function main() {
 
     console.log(`Bundled node runtime staged from ${nodeSource}`);
   }
+
+  const bootstrapEnv = loadBootstrapEnv(root);
+  const bootstrapEnvPath = path.join(runtimeRoot, "bootstrap", "runtime-env.json");
+  fs.mkdirSync(path.dirname(bootstrapEnvPath), { recursive: true });
+  fs.writeFileSync(bootstrapEnvPath, JSON.stringify(bootstrapEnv, null, 2));
+  console.log(`Bootstrap runtime env staged at ${bootstrapEnvPath}`);
 
   console.log(`Desktop runtime staged at ${runtimeRoot}`);
 }

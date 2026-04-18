@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
@@ -198,7 +199,41 @@ fn resolve_node_executable(runtime_root: &Path) -> Result<PathBuf, AnyError> {
   Err("Node.js runtime not found. Install Node.js 20+ or bundle a node binary under runtime/node/.".into())
 }
 
-fn start_backend(runtime_root: &Path, node_executable: &Path) -> Result<Child, AnyError> {
+fn load_bootstrap_env(runtime_root: &Path) -> Vec<(String, String)> {
+  let bootstrap_path = runtime_root.join("bootstrap").join("runtime-env.json");
+  if !bootstrap_path.exists() {
+    return Vec::new();
+  }
+
+  let raw = match fs::read_to_string(&bootstrap_path) {
+    Ok(raw) => raw,
+    Err(_) => return Vec::new(),
+  };
+
+  let parsed = match serde_json::from_str::<HashMap<String, String>>(&raw) {
+    Ok(parsed) => parsed,
+    Err(_) => return Vec::new(),
+  };
+
+  parsed
+    .into_iter()
+    .filter_map(|(key, value)| {
+      let normalized_key = key.trim().to_string();
+      let normalized_value = value.trim().to_string();
+      if normalized_key.is_empty() || normalized_value.is_empty() {
+        None
+      } else {
+        Some((normalized_key, normalized_value))
+      }
+    })
+    .collect()
+}
+
+fn start_backend(
+  runtime_root: &Path,
+  node_executable: &Path,
+  bootstrap_env: &[(String, String)],
+) -> Result<Child, AnyError> {
   let standalone_dir = runtime_root.join(".next").join("standalone");
   let server_entry = standalone_dir.join("server.js");
   if !server_entry.exists() {
@@ -213,6 +248,9 @@ fn start_backend(runtime_root: &Path, node_executable: &Path) -> Result<Child, A
     .env("PORT", "3000")
     .env("NODE_ENV", "production")
     .env("EMAILAGENT_DESKTOP", "1");
+  for (key, value) in bootstrap_env {
+    command.env(key, value);
+  }
   configure_stdio(&mut command);
 
   let child = command
@@ -221,7 +259,11 @@ fn start_backend(runtime_root: &Path, node_executable: &Path) -> Result<Child, A
   Ok(child)
 }
 
-fn start_worker(runtime_root: &Path, node_executable: &Path) -> Result<Child, AnyError> {
+fn start_worker(
+  runtime_root: &Path,
+  node_executable: &Path,
+  bootstrap_env: &[(String, String)],
+) -> Result<Child, AnyError> {
   let standalone_dir = runtime_root.join(".next").join("standalone");
   let worker_entry = standalone_dir.join("dist").join("worker.js");
   if !worker_entry.exists() {
@@ -234,6 +276,9 @@ fn start_worker(runtime_root: &Path, node_executable: &Path) -> Result<Child, An
     .arg(worker_entry.as_os_str())
     .env("NODE_ENV", "production")
     .env("EMAILAGENT_DESKTOP", "1");
+  for (key, value) in bootstrap_env {
+    command.env(key, value);
+  }
   configure_stdio(&mut command);
 
   let child = command
@@ -300,6 +345,7 @@ fn bootstrap_runtime(app: &AppHandle) -> Result<String, String> {
     .map_err(|err| format!("Failed to resolve packaged runtime: {err}"))?;
   let node_executable = resolve_node_executable(&runtime_root)
     .map_err(|err| format!("Startup blocked: {err}"))?;
+  let bootstrap_env = load_bootstrap_env(&runtime_root);
 
   let mut backend_child: Option<Child> = None;
   let mut attached_existing_backend = false;
@@ -307,7 +353,7 @@ fn bootstrap_runtime(app: &AppHandle) -> Result<String, String> {
   if is_backend_healthy() {
     attached_existing_backend = true;
   } else {
-    let mut backend = start_backend(&runtime_root, &node_executable)
+    let mut backend = start_backend(&runtime_root, &node_executable, &bootstrap_env)
       .map_err(|err| format!("Failed to start backend: {err}"))?;
 
     if let Err(err) = wait_for_backend(Duration::from_secs(BACKEND_BOOT_TIMEOUT_SECS)) {
@@ -320,7 +366,7 @@ fn bootstrap_runtime(app: &AppHandle) -> Result<String, String> {
     backend_child = Some(backend);
   }
 
-  let worker = match start_worker(&runtime_root, &node_executable) {
+  let worker = match start_worker(&runtime_root, &node_executable, &bootstrap_env) {
     Ok(worker) => worker,
     Err(err) => {
       if let Some(mut backend) = backend_child {

@@ -69,6 +69,18 @@ const USER_SUPPLIED_ONLY_KEYS = new Set<RuntimeConfigKey>([
   "GMAIL_REDIRECT_URI",
 ]);
 
+// In production desktop builds, allow only startup/bootstrap keys via process env.
+// User-provided OpenAI/OAuth keys must still come from runtime config storage.
+const PRODUCTION_BOOTSTRAP_ENV_KEYS = new Set<RuntimeConfigKey>([
+  "DATABASE_URL",
+  "AUTH_SECRET",
+  "MIDDLEWARE_VERIFY_SECRET",
+  "ONBOARDING_DRAFT_SECRET",
+  "ONBOARDING_DRAFT_SECRET_PREVIOUS",
+  "SESSION_COOKIE_SECURE",
+  "NODE_ENV",
+]);
+
 const CONFIG_DIR = path.join(os.homedir(), ".emailagent");
 const CONFIG_FILE = path.join(CONFIG_DIR, "runtime-config.json");
 
@@ -103,7 +115,7 @@ function isSecretKey(key: RuntimeConfigKey): boolean {
 
 function allowLegacyEnvFallback(key: RuntimeConfigKey): boolean {
   if (IS_PRODUCTION_RUNTIME) {
-    return false;
+    return PRODUCTION_BOOTSTRAP_ENV_KEYS.has(key);
   }
 
   return !USER_SUPPLIED_ONLY_KEYS.has(key);
