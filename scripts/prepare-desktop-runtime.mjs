@@ -54,18 +54,20 @@ function main() {
   );
 
   const bundledNodeSource = process.env.BUNDLED_NODE_PATH?.trim();
-  if (bundledNodeSource && fs.existsSync(bundledNodeSource)) {
+  const nodeSource = bundledNodeSource && bundledNodeSource.length > 0 ? bundledNodeSource : process.execPath;
+
+  if (nodeSource && fs.existsSync(nodeSource)) {
     const nodeDestination =
       process.platform === "win32"
         ? path.join(runtimeRoot, "node", "node.exe")
         : path.join(runtimeRoot, "node", "bin", "node");
-    copyFile(bundledNodeSource, nodeDestination);
+    copyFile(nodeSource, nodeDestination);
 
     if (process.platform !== "win32") {
       fs.chmodSync(nodeDestination, 0o755);
     }
 
-    console.log(`Bundled node runtime staged from ${bundledNodeSource}`);
+    console.log(`Bundled node runtime staged from ${nodeSource}`);
   }
 
   console.log(`Desktop runtime staged at ${runtimeRoot}`);
