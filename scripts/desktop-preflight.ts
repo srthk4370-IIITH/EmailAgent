@@ -27,6 +27,7 @@ const REQUIRED_SCRIPTS = [
   "start",
   "worker",
   "desktop:preflight",
+  "desktop:startup:faults",
   "desktop:tauri:dev",
   "desktop:tauri:build",
   "desktop:runtime:prod",
@@ -47,6 +48,8 @@ const REQUIRED_TAURI_RESOURCE_PATHS = [
   "../desktop/runtime/bootstrap",
   "../desktop/runtime/node",
 ] as const;
+
+const REQUIRED_NSIS_INSTALLER_HOOKS = "installer-hooks.nsh";
 
 function readPackageJsonScripts(): Record<string, string> {
   const packageJsonPath = path.join(process.cwd(), "package.json");
@@ -341,6 +344,7 @@ function main(): void {
     "src/app/api/auth/google/route.ts",
     "src/app/api/auth/google/callback/route.ts",
     "src-tauri/tauri.conf.json",
+    "src-tauri/installer-hooks.nsh",
     "src-tauri/Cargo.toml",
     "src-tauri/src/main.rs",
     "src-tauri/capabilities/default.json",
@@ -372,7 +376,15 @@ function main(): void {
       const config = JSON.parse(configRaw) as {
         app?: { windows?: Array<{ url?: string | null }> };
         build?: { devUrl?: string | null };
-        bundle?: { resources?: unknown };
+        bundle?: {
+          resources?: unknown;
+          windows?: {
+            allowDowngrades?: boolean;
+            nsis?: {
+              installerHooks?: string | null;
+            } | null;
+          };
+        };
       };
 
       const resourceEntries = Array.isArray(config.bundle?.resources)
@@ -391,6 +403,23 @@ function main(): void {
           detail: hasResource ? "included" : "missing",
         });
       }
+
+      const installerHooks = config.bundle?.windows?.nsis?.installerHooks ?? null;
+      addResult(results, {
+        name: "tauri:nsis_installer_hooks",
+        severity: installerHooks === REQUIRED_NSIS_INSTALLER_HOOKS ? "PASS" : "FAIL",
+        detail:
+          installerHooks === REQUIRED_NSIS_INSTALLER_HOOKS
+            ? installerHooks
+            : `expected ${REQUIRED_NSIS_INSTALLER_HOOKS}, got ${installerHooks ?? "null"}`,
+      });
+
+      const allowDowngrades = config.bundle?.windows?.allowDowngrades;
+      addResult(results, {
+        name: "tauri:windows_allow_downgrades",
+        severity: allowDowngrades === false ? "PASS" : "FAIL",
+        detail: allowDowngrades === false ? "false" : `expected false, got ${String(allowDowngrades)}`,
+      });
 
       const firstWindowUrl = config.app?.windows?.[0]?.url ?? null;
       const devUrl = config.build?.devUrl ?? null;

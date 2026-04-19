@@ -8,7 +8,7 @@ This project uses Tauri as a native wrapper around the existing Next.js + worker
 - Worker remains the same background process.
 - Tauri packages a bootstrap shell plus bundled runtime assets.
 - On app launch, Tauri auto-starts backend + worker and waits for backend health.
-- The bootstrap shell redirects to `http://127.0.0.1:3000` only after health is ready.
+- The bootstrap shell redirects to `http://127.0.0.1:3000` only after `/api/system/check` reports healthy.
 
 ## Prerequisites
 
@@ -82,6 +82,7 @@ Includes:
 - hard-validation tests
 - RAG integrity audit
 - Playwright E2E onboarding tests
+- desktop startup fault simulation
 - fault-injection validation
 
 Recommended native check before final bundle:

@@ -20,14 +20,15 @@ This checklist prepares the project to ship inside a desktop wrapper (Electron/T
 3. npm run desktop:preflight
 4. npm run desktop:ship:prep
 5. npm run test:e2e
-6. npx tauri info
-7. npm run desktop:qa:deep
+6. npm run desktop:startup:faults
+7. npx tauri info
+8. npm run desktop:qa:deep
 
 ## 3) Wrapper integration tasks
 
 1. Choose wrapper runtime (Electron or Tauri) and define target platforms.
 2. Auto-start the Next.js standalone backend and compiled worker from wrapper startup.
-3. Load bootstrap shell first; redirect to local app URL only after `/api/health` is healthy.
+3. Load bootstrap shell first; redirect to local app URL only after `/api/system/check` is healthy.
 4. Route OAuth login/callback through local loopback host to preserve cookie/session origin.
 5. Configure auto-update, crash reporting, and signed builds per platform.
 

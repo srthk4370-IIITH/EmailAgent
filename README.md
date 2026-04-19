@@ -69,8 +69,12 @@ Run commands:
 - App + worker (production runtime): `npm run build && npm run desktop:runtime:prod`
 - Tauri desktop dev shell: `npm run desktop:tauri:dev`
 - Build installer/app bundle: `npm run desktop:tauri:build`
+- Startup fault simulation matrix: `npm run desktop:startup:faults`
 - Root installer output (double-click to install): `EmailAgent-Installer.exe`
 - Installer alias command: `npm run tauri build`
+
+Installer lifecycle note:
+- Installer/uninstaller now execute cleanup hooks that remove prior install files and local wrapper state, so reinstall and upgrade flows behave like clean-machine launches.
 
 ### First run behavior
 - On first launch, EmailAgent opens onboarding automatically.
