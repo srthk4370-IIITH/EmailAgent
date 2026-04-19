@@ -70,6 +70,7 @@ function main() {
   const runtimePublic = path.join(runtimeStandalone, "public");
   const runtimeWorkerDir = path.join(runtimeStandalone, "dist");
   const runtimeWorker = path.join(runtimeWorkerDir, "worker.js");
+  const runtimeServerEntry = path.join(runtimeStandalone, "server.js");
 
   assertExists("Next standalone output", standaloneSource);
   assertExists("Next static output", staticSource);
@@ -86,6 +87,9 @@ function main() {
   }
 
   copyFile(workerSource, runtimeWorker);
+  assertExists("Runtime backend entry", runtimeServerEntry);
+  assertExists("Runtime static assets", runtimeStatic);
+  assertExists("Runtime worker entry", runtimeWorker);
 
   // Worker emit is CommonJS. Force CJS module interpretation even if parent standalone package is ESM.
   fs.writeFileSync(
@@ -111,10 +115,32 @@ function main() {
   }
 
   const bootstrapEnv = loadBootstrapEnv(root);
+  const bootstrapDir = path.join(runtimeRoot, "bootstrap");
   const bootstrapEnvPath = path.join(runtimeRoot, "bootstrap", "runtime-env.json");
   fs.mkdirSync(path.dirname(bootstrapEnvPath), { recursive: true });
   fs.writeFileSync(bootstrapEnvPath, JSON.stringify(bootstrapEnv, null, 2));
+
+  const runtimeManifestPath = path.join(bootstrapDir, "runtime-manifest.json");
+  fs.writeFileSync(
+    runtimeManifestPath,
+    JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        backendEntry: path.relative(runtimeRoot, runtimeServerEntry),
+        staticDir: path.relative(runtimeRoot, runtimeStatic),
+        workerEntry: path.relative(runtimeRoot, runtimeWorker),
+        bundledNodeDetected: fs.existsSync(
+          process.platform === "win32"
+            ? path.join(runtimeRoot, "node", "node.exe")
+            : path.join(runtimeRoot, "node", "bin", "node"),
+        ),
+      },
+      null,
+      2,
+    ),
+  );
   console.log(`Bootstrap runtime env staged at ${bootstrapEnvPath}`);
+  console.log(`Runtime manifest staged at ${runtimeManifestPath}`);
 
   console.log(`Desktop runtime staged at ${runtimeRoot}`);
 }

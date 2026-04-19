@@ -52,6 +52,18 @@
         color: #fecaca;
         display: none;
       }
+      .error-title {
+        font-weight: 700;
+      }
+      .error-line {
+        margin-top: 6px;
+        line-height: 1.4;
+      }
+      .error-code {
+        margin-top: 10px;
+        font-size: 12px;
+        opacity: 0.85;
+      }
       .actions {
         margin-top: 16px;
         display: flex;
@@ -109,13 +121,19 @@
       <h1>EmailAgent is starting</h1>
       <p>EmailAgent launches its local backend and worker automatically.</p>
       <div class="status" id="status">Initializing startup checks...</div>
-      <div class="details" id="details">Waiting for local health endpoint at <code>http://127.0.0.1:3000/api/health</code>.</div>
+      <div class="details" id="details">Waiting for local startup check at <code>http://127.0.0.1:3000/api/system/check</code>.</div>
       <div class="spinner" id="spinner" aria-hidden="true"></div>
 
-      <div class="error" id="error"></div>
+      <div class="error" id="error">
+        <div class="error-title" id="errorTitle"></div>
+        <div class="error-line" id="errorWhy"></div>
+        <div class="error-line" id="errorFix"></div>
+        <div class="error-code" id="errorCode"></div>
+      </div>
 
       <div class="actions">
         <button class="primary" id="retryButton" disabled>Retry startup</button>
+        <button class="secondary" id="installNodeButton" style="display: none">Install Node.js</button>
       </div>
 
       <ul>
@@ -129,8 +147,13 @@
       const statusEl = document.getElementById("status");
       const detailsEl = document.getElementById("details");
       const errorEl = document.getElementById("error");
+      const errorTitleEl = document.getElementById("errorTitle");
+      const errorWhyEl = document.getElementById("errorWhy");
+      const errorFixEl = document.getElementById("errorFix");
+      const errorCodeEl = document.getElementById("errorCode");
       const spinnerEl = document.getElementById("spinner");
       const retryButton = document.getElementById("retryButton");
+      const installNodeButton = document.getElementById("installNodeButton");
 
       async function invokeCommand(command, payload) {
         const internalInvoke = window.__TAURI_INTERNALS__?.invoke;
@@ -146,10 +169,19 @@
         throw new Error("Desktop invoke bridge unavailable.");
       }
 
-      function showError(message) {
+      function showError(payload) {
+        const message = typeof payload === "string" ? payload : payload?.message || "Startup failed.";
+        const why = typeof payload === "string" ? "" : payload?.why || "";
+        const fix = typeof payload === "string" ? "" : payload?.fix || "";
+        const code = typeof payload === "string" ? "" : payload?.code || "";
+
         errorEl.style.display = "block";
-        errorEl.textContent = message;
+        errorTitleEl.textContent = message;
+        errorWhyEl.textContent = why ? `Why: ${why}` : "";
+        errorFixEl.textContent = fix ? `Fix: ${fix}` : "";
+        errorCodeEl.textContent = code ? `Error code: ${code}` : "";
         retryButton.disabled = false;
+        installNodeButton.style.display = code === "NODE_NOT_FOUND" ? "inline-flex" : "none";
         spinnerEl.style.display = "none";
       }
 
@@ -176,6 +208,9 @@
           const state = status?.state || "starting";
           const message = status?.message || "Waiting for startup state...";
           const backendUrl = status?.backendUrl || FALLBACK_BACKEND_URL;
+          const errorCode = status?.errorCode || "";
+          const errorWhy = status?.errorWhy || "";
+          const errorFix = status?.errorFix || "";
 
           if (state === "ready") {
             redirectToBackend(backendUrl);
@@ -185,7 +220,12 @@
           if (state === "error") {
             statusEl.textContent = "Startup failed";
             detailsEl.textContent = "EmailAgent could not auto-start required services.";
-            showError(message);
+            showError({
+              message,
+              code: errorCode,
+              why: errorWhy,
+              fix: errorFix,
+            });
             return;
           }
 
@@ -197,11 +237,20 @@
 
       retryButton.addEventListener("click", async () => {
         retryButton.disabled = true;
+        installNodeButton.style.display = "none";
         showStarting("Retrying desktop startup...");
         try {
           await invokeCommand("desktop_retry_runtime_boot");
         } catch (error) {
           showError(error instanceof Error ? error.message : "Retry request failed.");
+        }
+      });
+
+      installNodeButton.addEventListener("click", async () => {
+        try {
+          await invokeCommand("open_external_url", { url: "https://nodejs.org" });
+        } catch {
+          window.open("https://nodejs.org", "_blank", "noopener,noreferrer");
         }
       });
 

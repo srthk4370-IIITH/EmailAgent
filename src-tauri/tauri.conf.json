@@ -28,7 +28,10 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "../desktop/runtime"
+      "../desktop/runtime/.next/standalone",
+      "../desktop/runtime/.next/standalone/.next/static",
+      "../desktop/runtime/bootstrap",
+      "../desktop/runtime/node"
     ],
     "icon": [
       "icons/icon.ico"

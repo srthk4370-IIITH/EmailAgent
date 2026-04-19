@@ -33,6 +33,21 @@ const REQUIRED_SCRIPTS = [
   "desktop:qa:deep",
 ] as const;
 
+const REQUIRED_RUNTIME_BUNDLE_PATHS = [
+  "desktop/runtime/.next/standalone/server.js",
+  "desktop/runtime/.next/standalone/.next/static",
+  "desktop/runtime/.next/standalone/dist/worker.js",
+  "desktop/runtime/bootstrap/runtime-env.json",
+  "desktop/runtime/bootstrap/runtime-manifest.json",
+] as const;
+
+const REQUIRED_TAURI_RESOURCE_PATHS = [
+  "../desktop/runtime/.next/standalone",
+  "../desktop/runtime/.next/standalone/.next/static",
+  "../desktop/runtime/bootstrap",
+  "../desktop/runtime/node",
+] as const;
+
 function readPackageJsonScripts(): Record<string, string> {
   const packageJsonPath = path.join(process.cwd(), "package.json");
   const raw = fs.readFileSync(packageJsonPath, "utf8");
@@ -341,6 +356,15 @@ function main(): void {
     });
   }
 
+  for (const file of REQUIRED_RUNTIME_BUNDLE_PATHS) {
+    const absolute = path.join(process.cwd(), file);
+    addResult(results, {
+      name: `runtime_bundle:${file}`,
+      severity: fs.existsSync(absolute) ? "PASS" : "FAIL",
+      detail: fs.existsSync(absolute) ? "present" : "missing",
+    });
+  }
+
   const tauriConfigPath = path.join(process.cwd(), "src-tauri", "tauri.conf.json");
   if (fs.existsSync(tauriConfigPath)) {
     try {
@@ -348,7 +372,25 @@ function main(): void {
       const config = JSON.parse(configRaw) as {
         app?: { windows?: Array<{ url?: string | null }> };
         build?: { devUrl?: string | null };
+        bundle?: { resources?: unknown };
       };
+
+      const resourceEntries = Array.isArray(config.bundle?.resources)
+        ? config.bundle.resources.filter((value): value is string => typeof value === "string")
+        : [];
+
+      for (const requiredResource of REQUIRED_TAURI_RESOURCE_PATHS) {
+        const normalizedRequired = requiredResource.replace(/\\/g, "/");
+        const hasResource = resourceEntries.some(
+          (entry) => entry.replace(/\\/g, "/") === normalizedRequired,
+        );
+
+        addResult(results, {
+          name: `tauri:resource:${requiredResource}`,
+          severity: hasResource ? "PASS" : "FAIL",
+          detail: hasResource ? "included" : "missing",
+        });
+      }
 
       const firstWindowUrl = config.app?.windows?.[0]?.url ?? null;
       const devUrl = config.build?.devUrl ?? null;
