@@ -133,6 +133,11 @@ fn desktop_boot_status(app: AppHandle) -> DesktopBootStatus {
 
 #[tauri::command]
 fn desktop_retry_runtime_boot(app: AppHandle) -> Result<DesktopBootStatus, String> {
+  if let Err(failure) = ensure_instance_lock(&app) {
+    set_boot_status(&app, DesktopBootStatus::error_with(&failure));
+    return Ok(current_boot_status(&app));
+  }
+
   spawn_runtime_bootstrap(&app, true);
   Ok(current_boot_status(&app))
 }
@@ -725,6 +730,60 @@ fn spawn_runtime_bootstrap(app: &AppHandle, force_retry: bool) {
   });
 }
 
+fn read_lock_pid(lock_path: &Path) -> Option<u32> {
+  let raw = fs::read_to_string(lock_path).ok()?;
+  for line in raw.lines() {
+    let trimmed = line.trim();
+    if let Some(pid_text) = trimmed.strip_prefix("pid=") {
+      if let Ok(pid) = pid_text.trim().parse::<u32>() {
+        return Some(pid);
+      }
+    }
+  }
+  None
+}
+
+fn is_pid_running(pid: u32) -> bool {
+  if pid == std::process::id() {
+    return true;
+  }
+
+  #[cfg(target_os = "windows")]
+  {
+    let query = format!("tasklist /FI \"PID eq {pid}\" /FO LIST /NH");
+    let output = Command::new("cmd").args(["/C", query.as_str()]).output();
+
+    let output = match output {
+      Ok(output) => output,
+      Err(_) => return false,
+    };
+
+    if !output.status.success() {
+      return false;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+    if stdout.contains("no tasks are running") {
+      return false;
+    }
+
+    stdout.contains(&format!("pid: {pid}"))
+      || stdout.contains(&format!("pid:\t{pid}"))
+      || stdout.contains(&format!("pid:{pid}"))
+  }
+
+  #[cfg(not(target_os = "windows"))]
+  {
+    Command::new("kill")
+      .args(["-0", &pid.to_string()])
+      .stdout(Stdio::null())
+      .stderr(Stdio::null())
+      .status()
+      .map(|status| status.success())
+      .unwrap_or(false)
+  }
+}
+
 fn acquire_instance_lock(app: &AppHandle) -> Result<AppInstanceLock, String> {
   let lock_dir = app
     .path()
@@ -735,18 +794,43 @@ fn acquire_instance_lock(app: &AppHandle) -> Result<AppInstanceLock, String> {
     .map_err(|err| format!("Unable to create app data directory for lock file: {err}"))?;
 
   let lock_path = lock_dir.join("instance.lock");
-  let mut file = match OpenOptions::new()
-    .write(true)
-    .create_new(true)
-    .open(&lock_path)
-  {
+  let open_new_lock = || -> Result<File, String> {
+    OpenOptions::new()
+      .write(true)
+      .create_new(true)
+      .open(&lock_path)
+      .map_err(|err| {
+        if err.kind() == ErrorKind::AlreadyExists {
+          "LOCK_ALREADY_EXISTS".to_string()
+        } else {
+          format!("Unable to create instance lock file: {err}")
+        }
+      })
+  };
+
+  let mut file = match open_new_lock() {
     Ok(file) => file,
-    Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-      return Err("Another EmailAgent Desktop instance is already running.".to_string())
+    Err(err) if err == "LOCK_ALREADY_EXISTS" => {
+      if let Some(existing_pid) = read_lock_pid(&lock_path) {
+        if is_pid_running(existing_pid) {
+          return Err(format!(
+            "Another EmailAgent Desktop instance is already running (pid={existing_pid})."
+          ));
+        }
+      }
+
+      fs::remove_file(&lock_path)
+        .map_err(|remove_err| format!("Unable to clear stale instance lock file: {remove_err}"))?;
+
+      match open_new_lock() {
+        Ok(file) => file,
+        Err(retry_err) if retry_err == "LOCK_ALREADY_EXISTS" => {
+          return Err("Another EmailAgent Desktop instance is already running.".to_string())
+        }
+        Err(retry_err) => return Err(retry_err),
+      }
     }
-    Err(err) => {
-      return Err(format!("Unable to create instance lock file: {err}"));
-    }
+    Err(err) => return Err(err),
   };
 
   let _ = writeln!(file, "pid={}", std::process::id());
@@ -755,6 +839,34 @@ fn acquire_instance_lock(app: &AppHandle) -> Result<AppInstanceLock, String> {
     path: lock_path,
     _file: file,
   })
+}
+
+fn ensure_instance_lock(app: &AppHandle) -> Result<(), StartupFailure> {
+  let state = app.state::<ManagedInstanceLock>();
+  let mut guard = state.0.lock().map_err(|_| {
+    StartupFailure::new(
+      "INSTANCE_LOCK_STATE_FAILED",
+      "Unable to access instance lock state.",
+      "Instance lock mutex is unavailable.".to_string(),
+      "Close and relaunch EmailAgent Desktop.",
+    )
+  })?;
+
+  if guard.is_some() {
+    return Ok(());
+  }
+
+  let lock = acquire_instance_lock(app).map_err(|err| {
+    StartupFailure::new(
+      "INSTANCE_LOCK_FAILED",
+      "EmailAgent could not acquire the app instance lock.",
+      err,
+      "Close other EmailAgent windows and relaunch. If the issue persists, restart Windows.",
+    )
+  })?;
+
+  *guard = Some(lock);
+  Ok(())
 }
 
 fn release_instance_lock(app: &AppHandle) {
@@ -804,16 +916,14 @@ fn main() {
     .manage(ManagedBootInFlight(Mutex::new(false)))
     .manage(ManagedInstanceLock(Mutex::new(None)))
     .setup(|app| {
-      let lock = acquire_instance_lock(app.handle())
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
-      let lock_state = app.state::<ManagedInstanceLock>();
-      let mut lock_guard = lock_state
-        .0
-        .lock()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Failed to lock instance state"))?;
-      *lock_guard = Some(lock);
-
-      spawn_runtime_bootstrap(app.handle(), false);
+      match ensure_instance_lock(app.handle()) {
+        Ok(()) => {
+          spawn_runtime_bootstrap(app.handle(), false);
+        }
+        Err(failure) => {
+          set_boot_status(app.handle(), DesktopBootStatus::error_with(&failure));
+        }
+      }
 
       Ok(())
     })
